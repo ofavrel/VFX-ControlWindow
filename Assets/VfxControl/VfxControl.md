@@ -109,15 +109,49 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
 ## Scene-view gizmos (custom — VFX's own are internal & unusable)
 
 `SceneView.duringSceneGui`. An "edit in Scene" toggle on spaceable struct headers
-(`IsGizmoSupported`: Position, DirectionType, Vector, AABox). Activating unfolds the card
-(restored to prior fold state on deactivate). State: `_gizmoStruct` + `_structLeaves`.
+(`IsGizmoSupported`: Position, DirectionType, Vector, AABox, Line, Plane + the shape set
+`s_ShapeGizmoTypes` = **TCone/TArcCone, TSphere/TArcSphere, TCircle/TArcCircle,
+TTorus/TArcTorus, OrientedBox, Transform** — note `realType` is the C# struct name, so
+shapes carry the `T` prefix; the shape set is additionally gated on `p.Spaceable` to skip
+the inner shape/`transform` nested in another type, which carries no space — see
+[[vfx-cone-arccone-layout]]).
+Activating unfolds the card (restored to prior fold state on deactivate). State:
+`_gizmoStruct` + `_structLeaves`. All four shapes share helpers: `DrawSpaceTransformHandle`
+(tool-aware move/rotate/scale in the base frame), `RadialRadiusHandle` (radial cube
+slider), and `ArcHandle` (Slider2D arc, `rotation` orients the sweep plane). Each
+`Draw*Gizmo` draws the full shape when its arc leaf is absent (so the non-Arc Cone/
+Sphere/Circle/Torus variants work with no extra code).
 
 - **Position** → `PositionHandle`. **Direction** → `RotationHandle` (persistent
   `_gizmoRotation` realigned via `FromToRotation` — rebuilding with `LookRotation` each
   frame caused pole flips). **Vector** → rotation gizmo (direction) + `ScaleValueHandle`
   cube at origin (magnitude, value unclamped; only the drawn arrow length clamps 1–10),
   arrow cone tip. **AABox** → `BoxBoundsHandle` (axis-colored face handles via
-  `midpointHandleDrawFunction`) + a center `PositionHandle`.
+  `midpointHandleDrawFunction`) + a center `PositionHandle`. **TCone/TArcCone** →
+  `DrawConeGizmo`, a public-`Handles` reimplementation of the package's internal
+  `VFXConeGizmo`/`VFXTArcConeGizmo`: transform handle in the base frame (respects
+  `Tools.current` — move/rotate/scale), then wire discs/arcs + radial cube radius
+  sliders, an up-axis height slider, and an arc `Slider2D` (mirrors `VFXGizmo.ArcGizmo`)
+  inside the cone's TRS frame. Leaves matched by label (`GizmoLeaf`); the arc leaf is
+  absent on a plain Cone (skips the wedge edges + arc handle). **TSphere/TArcSphere** →
+  `DrawSphereGizmo`, same pattern: transform handle, then three full wire discs (Sphere)
+  or longitudinal half-circles + equator arc (ArcSphere), three per-axis radial radius
+  sliders, and an equator arc handle. Arc leaf absent on a plain Sphere. **TCircle/
+  TArcCircle** → `DrawCircleGizmo` (XY-plane disc/arc + cardinal radius sliders gated to
+  the visible arc + arc handle). **TTorus/TArcTorus** → `DrawTorusGizmo` (ring envelope =
+  two side discs ±minor + outer/inner rings, tube cross-sections at the cardinal sweep
+  angles, a `majorRadius` slider along +up and a `minorRadius` slider out of plane, + arc
+  handle). Torus radii matched by label `major`/`minor`; all others by `radius`. **Line**
+  → `DrawLineGizmo`: two position-spaceable endpoints (`start`/`end`) joined by a line,
+  each a `PositionHandle` — no TRS frame, same space handling as the Position gizmo.
+  **OrientedBox/Transform** → `DrawBoxGizmo` (one method — they're the same shape): a
+  `DrawWireCube` of size/scale in the oriented frame + the shared tool-aware
+  move/rotate/scale handle. Leaves matched `center`→`position`, `size`→`scale` fallbacks;
+  the size/scale leaf drives the `ScaleHandle` branch. **Plane** → `DrawPlaneGizmo`: a
+  position-spaceable point + direction-spaceable `normal`, shown as a square quad + normal
+  arrow; tool-gated (Move = position handle, Rotate = normal rotation gizmo, reusing the
+  DirectionType persistent-rotation trick). Quad is handle-size-relative (VFX's is a fixed
+  huge quad).
 - Local/World via `component.transform` (`TransformPoint`/`TransformDirection`) or a
   `Handles.DrawingScope` matrix for the box.
 - **Cosmetic draws (DrawLine/ConeHandleCap) must be guarded by
@@ -172,6 +206,7 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 
 - Playback tab is just the Duration field; Debug tab is a placeholder (live stats, systems,
   visualizers — see handoff).
-- More gizmo shapes (Sphere, Cone/ArcCone, Circle, Plane, Torus).
+- All standard VFX gizmo types implemented: Position, Direction, Vector, AABox, Line,
+  Plane, Cone/Sphere/Circle/Torus (+ Arc variants), OrientedBox, Transform.
 - Preset save (footer button is disabled).
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.

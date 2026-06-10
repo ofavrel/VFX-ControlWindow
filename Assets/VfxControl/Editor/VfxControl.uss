@@ -93,18 +93,22 @@
     background-color: var(--unity-colors-highlight-background);
 }
 
+/* timer + live count share one muted-but-readable tone (theme-adaptive label
+   text dimmed via opacity, so both stay legible in light and dark themes) */
 .vfx-mini-time {
     -unity-font-definition: resource("Fonts/RobotoMono/RobotoMono-Regular");
-    min-width: 44px;
+    min-width: 92px;
     -unity-text-align: middle-right;
     color: var(--unity-colors-label-text);
+    opacity: 0.6;
 }
 
 .vfx-mini-live {
     min-width: 56px;
     margin-left: 8px;
     -unity-text-align: middle-right;
-    color: var(--unity-colors-highlight-background-hover);
+    color: var(--unity-colors-label-text);
+    opacity: 0.6;
 }
 
 /* ---- recessed divider between asset/playback group and tabs group ---- */

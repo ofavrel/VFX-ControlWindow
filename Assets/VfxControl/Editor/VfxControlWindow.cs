@@ -484,7 +484,7 @@ namespace VfxControl.EditorTools
             scrub.RegisterCallback<MouseUpEvent>(e => scrub.ReleaseMouse());
             bar.Add(scrub);
 
-            _timeLabel = new Label("0.00s");
+            _timeLabel = new Label("0.00 / 0s");
             _timeLabel.AddToClassList("vfx-mini-time");
             bar.Add(_timeLabel);
 
@@ -979,7 +979,7 @@ namespace VfxControl.EditorTools
             });
             header.Add(click);
             var headerTools = BuildBulkTools(leaves);
-            if (IsGizmoSupported(p.RealType) && _structLeaves.TryGetValue(p, out var glv) && glv.Count > 0)
+            if (IsGizmoSupported(p) && _structLeaves.TryGetValue(p, out var glv) && glv.Count > 0)
             {
                 headerTools.Insert(0, BuildGizmoButton(p, inline: true)); // left of reset/pin
                 headerTools.style.width = StyleKeyword.Auto; // widen to fit the extra icon
@@ -1500,7 +1500,7 @@ namespace VfxControl.EditorTools
         {
             if (_effect == null) return;
             if (_liveLabel != null) _liveLabel.text = $"{_effect.aliveParticleCount:N0} live";
-            if (_timeLabel != null) _timeLabel.text = $"{_scrubT * _duration:0.00}s";
+            if (_timeLabel != null) _timeLabel.text = $"{_scrubT * _duration:0.00} / {_duration:0.##}s";
             // keep the progress fill in sync with the scrub position (covers restart/step
             // while paused, when Tick isn't advancing)
             if (_miniFill != null) _miniFill.style.width = Length.Percent(_scrubT * 100f);
@@ -1611,9 +1611,23 @@ namespace VfxControl.EditorTools
 
         // ---- scene-view edit gizmo (custom Handles) ----
 
-        static bool IsGizmoSupported(string realType) =>
-            realType == "Position" || realType == "DirectionType" ||
-            realType == "Vector" || realType == "AABox";
+        // Shape gizmos keyed by C# struct name (realType). They also appear nested (e.g.
+        // the inner Cone of an ArcCone), where the sub-struct carries no space; we gate
+        // them on p.Spaceable below so only the top-level one — whose frame is known —
+        // offers the gizmo. See [[vfx-cone-arccone-layout]].
+        static readonly HashSet<string> s_ShapeGizmoTypes = new()
+        {
+            "TCone", "TArcCone", "TSphere", "TArcSphere",
+            "TCircle", "TArcCircle", "TTorus", "TArcTorus",
+            // Transform/OrientedBox MUST stay spaceable-gated: Transform also appears as
+            // the nested `transform` of every shape (no space there), so the gate keeps
+            // the button on the top-level exposed one only.
+            "OrientedBox", "Transform",
+        };
+
+        static bool IsGizmoSupported(VfxExposedParam p) =>
+            p.RealType is "Position" or "DirectionType" or "Vector" or "AABox" or "Line" or "Plane" ||
+            (s_ShapeGizmoTypes.Contains(p.RealType) && p.Spaceable);
 
         VisualElement BuildGizmoButton(VfxExposedParam structParam, bool inline = false)
         {
@@ -1895,6 +1909,570 @@ namespace VfxControl.EditorTools
                 GizmoLabel(boxWorld, HandleUtility.GetHandleSize(boxWorld),
                     $"<b>{_gizmoStruct.Label}</b>\ncenter {FmtAxis(_boxHandle.center)}\nsize {FmtAxis(_boxHandle.size)}");
             }
+            else if (_gizmoType == "TCone" || _gizmoType == "TArcCone")
+            {
+                DrawConeGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "TSphere" || _gizmoType == "TArcSphere")
+            {
+                DrawSphereGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "TCircle" || _gizmoType == "TArcCircle")
+            {
+                DrawCircleGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "TTorus" || _gizmoType == "TArcTorus")
+            {
+                DrawTorusGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "Line")
+            {
+                DrawLineGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "OrientedBox" || _gizmoType == "Transform")
+            {
+                DrawBoxGizmo(leaves, t, local);
+            }
+            else if (_gizmoType == "Plane")
+            {
+                DrawPlaneGizmo(leaves, t, local);
+            }
+        }
+
+        // Mirrors the VFX package's VFXPlaneGizmo (internal): a position-spaceable point
+        // plus a direction-spaceable normal, shown as a square quad in the plane + a normal
+        // arrow. Tool-gated like the other gizmos — Move shows the position handle, Rotate
+        // shows the normal rotation gizmo (persistent `_gizmoRotation`, like DirectionType,
+        // so the normal never pole-flips). VFX draws a fixed huge quad; we make it
+        // handle-size-relative so it stays a sensible on-screen size (VFX even notes this).
+        void DrawPlaneGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var posLeaf = GizmoLeaf(leaves, "position");
+            var normLeaf = GizmoLeaf(leaves, "normal");
+            if (posLeaf == null || normLeaf == null) return;
+
+            Vector3 p = GizmoVec(posLeaf);
+            Vector3 n = GizmoVec(normLeaf);
+
+            Vector3 worldPos = local ? t.TransformPoint(p) : p;
+            Vector3 worldNormal = local ? t.TransformDirection(n) : n;
+            if (worldNormal.sqrMagnitude < 1e-6f) worldNormal = Vector3.up;
+            worldNormal.Normalize();
+            float size = HandleUtility.GetHandleSize(worldPos);
+
+            // square quad in the plane + normal arrow (cosmetic → Repaint only, else GL
+            // state corrupts and bleeds pixel-block artifacts)
+            if (Event.current.type == EventType.Repaint)
+                using (new Handles.DrawingScope(Matrix4x4.TRS(worldPos, Quaternion.FromToRotation(Vector3.forward, worldNormal), Vector3.one)))
+                {
+                    float h = 2.5f * size;
+                    Handles.color = new Color(0.5f, 0.8f, 1f);
+                    Handles.DrawAAPolyLine(new Vector3(h, h, 0), new Vector3(h, -h, 0),
+                        new Vector3(-h, -h, 0), new Vector3(-h, h, 0), new Vector3(h, h, 0));
+                    Handles.color = Color.yellow;
+                    Handles.ArrowHandleCap(0, Vector3.zero, Quaternion.identity, size, EventType.Repaint);
+                }
+
+            if (Tools.current == Tool.Rotate)
+            {
+                // normal via the persistent rotation gizmo (avoids pole flips), like DirectionType
+                AlignGizmoRotation(worldNormal);
+                EditorGUI.BeginChangeCheck();
+                Quaternion nrot = Handles.RotationHandle(_gizmoRotation, worldPos);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    _gizmoRotation = nrot;
+                    Vector3 nd = (nrot * Vector3.forward).normalized;
+                    CommitGizmo(normLeaf, local ? t.InverseTransformDirection(nd).normalized : nd);
+                }
+            }
+            else
+            {
+                EditorGUI.BeginChangeCheck();
+                Vector3 np = Handles.PositionHandle(worldPos, local ? t.rotation : Quaternion.identity);
+                if (EditorGUI.EndChangeCheck())
+                    CommitGizmo(posLeaf, local ? t.InverseTransformPoint(np) : np);
+            }
+
+            GizmoLabel(worldPos, size, $"<b>{_gizmoStruct.Label}</b>\nnormal {FmtAxis(n)}");
+        }
+
+        // OrientedBox and Transform are the same shape — a center/position, euler angles,
+        // and a size/scale — so they share one gizmo: a wire cube in the oriented frame
+        // (more legible than bare transform handles, per the VFX VFXOrientedBoxGizmo idea)
+        // plus the tool-aware move/rotate/scale handle. The leaf names differ
+        // (center/size vs position/scale), matched with fallbacks.
+        void DrawBoxGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var ctrLeaf  = GizmoLeaf(leaves, "center") ?? GizmoLeaf(leaves, "position");
+            var angLeaf  = GizmoLeaf(leaves, "angle");
+            var sizeLeaf = GizmoLeaf(leaves, "size") ?? GizmoLeaf(leaves, "scale");
+
+            Vector3 center = ctrLeaf  != null ? GizmoVec(ctrLeaf)  : Vector3.zero;
+            Vector3 angles = angLeaf  != null ? GizmoVec(angLeaf)  : Vector3.zero;
+            Vector3 size   = sizeLeaf != null ? GizmoVec(sizeLeaf) : Vector3.one;
+
+            Matrix4x4 baseMatrix = local ? t.localToWorldMatrix : Matrix4x4.identity;
+            Quaternion rot = Quaternion.Euler(angles);
+
+            // wire cube in the box's own oriented frame (cosmetic → Repaint only, else GL
+            // state corrupts and bleeds pixel-block artifacts)
+            if (Event.current.type == EventType.Repaint)
+                using (new Handles.DrawingScope(baseMatrix * Matrix4x4.TRS(center, rot, Vector3.one)))
+                {
+                    Handles.color = new Color(0.5f, 0.8f, 1f);
+                    Handles.DrawWireCube(Vector3.zero, size);
+                }
+
+            // size/scale leaf drives the ScaleHandle branch of the shared transform handle
+            DrawSpaceTransformHandle(baseMatrix, center, rot, size, ctrLeaf, angLeaf, sizeLeaf);
+
+            Vector3 wc = baseMatrix.MultiplyPoint(center);
+            GizmoLabel(wc, HandleUtility.GetHandleSize(wc), $"<b>{_gizmoStruct.Label}</b>\nsize {FmtAxis(size)}");
+        }
+
+        // Mirrors the VFX package's VFXLineGizmo (internal): two position-spaceable
+        // endpoints joined by a line, each with its own PositionHandle. No transform/TRS
+        // frame — both points live directly in the param's space (component transform for
+        // Local, identity for World), like the Position gizmo above.
+        void DrawLineGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var startLeaf = GizmoLeaf(leaves, "start");
+            var endLeaf = GizmoLeaf(leaves, "end");
+            if (startLeaf == null || endLeaf == null) return;
+
+            Vector3 s = GizmoVec(startLeaf);
+            Vector3 e = GizmoVec(endLeaf);
+            Vector3 ws = local ? t.TransformPoint(s) : s;
+            Vector3 we = local ? t.TransformPoint(e) : e;
+            Quaternion handleRot = local ? t.rotation : Quaternion.identity;
+
+            // connecting line — cosmetic, so guard on Repaint (drawing on other events
+            // corrupts GL state and bleeds pixel-block artifacts)
+            if (Event.current.type == EventType.Repaint)
+            {
+                Handles.color = Color.yellow;
+                Handles.DrawLine(ws, we);
+            }
+
+            EditorGUI.BeginChangeCheck();
+            Vector3 nws = Handles.PositionHandle(ws, handleRot);
+            if (EditorGUI.EndChangeCheck())
+                CommitGizmo(startLeaf, local ? t.InverseTransformPoint(nws) : nws);
+
+            EditorGUI.BeginChangeCheck();
+            Vector3 nwe = Handles.PositionHandle(we, handleRot);
+            if (EditorGUI.EndChangeCheck())
+                CommitGizmo(endLeaf, local ? t.InverseTransformPoint(nwe) : nwe);
+
+            GizmoLabel(ws, HandleUtility.GetHandleSize(ws), $"<b>{_gizmoStruct.Label}</b>  start {FmtAxis(s)}");
+            GizmoLabel(we, HandleUtility.GetHandleSize(we), $"<b>{_gizmoStruct.Label}</b>  end {FmtAxis(e)}");
+        }
+
+        // The cone/sphere shapes share a transform frame: their move/rotate/scale handle
+        // runs in the base frame (component transform for Local, identity for World — like
+        // VFXSpaceableGizmo's Handles.matrix), respecting the active tool, exactly as VFX's
+        // TransformGizmo does (drawn outside the shape's own matrix).
+        void DrawSpaceTransformHandle(Matrix4x4 baseMatrix, Vector3 pos, Quaternion rot, Vector3 scale,
+            VfxExposedParam posLeaf, VfxExposedParam angLeaf, VfxExposedParam sclLeaf)
+        {
+            using (new Handles.DrawingScope(baseMatrix))
+            {
+                if (Tools.current == Tool.Rotate && angLeaf != null)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    Quaternion nr = Handles.RotationHandle(rot, pos);
+                    if (EditorGUI.EndChangeCheck()) CommitGizmo(angLeaf, nr.eulerAngles);
+                }
+                else if (Tools.current == Tool.Scale && sclLeaf != null)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    Vector3 ns = Handles.ScaleHandle(scale, pos, rot, HandleUtility.GetHandleSize(pos));
+                    if (EditorGUI.EndChangeCheck()) CommitGizmo(sclLeaf, ns);
+                }
+                else if (posLeaf != null)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    Vector3 np = Handles.PositionHandle(
+                        pos, Tools.pivotRotation == PivotRotation.Local ? rot : Quaternion.identity);
+                    if (EditorGUI.EndChangeCheck()) CommitGizmo(posLeaf, np);
+                }
+            }
+        }
+
+        // Radial directions for the three radius handles of a sphere (one per axis).
+        static readonly Vector3[] s_SphereRadiusDirs = { Vector3.right, Vector3.up, Vector3.forward };
+
+        // Mirrors the VFX package's VFXTSphereGizmo / VFXArcSphereGizmo (both internal) on
+        // the public Handles API. Transform handle in the base frame; the sphere shell and
+        // its radius/arc handles inside that frame × the sphere's own TRS. A plain Sphere
+        // has no arc leaf, so it draws three full wire discs and skips the arc handle.
+        void DrawSphereGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var posLeaf = GizmoLeaf(leaves, "position");
+            var angLeaf = GizmoLeaf(leaves, "angle");
+            var sclLeaf = GizmoLeaf(leaves, "scale");
+            var radLeaf = GizmoLeaf(leaves, "radius");
+            var arcLeaf = GizmoLeaf(leaves, "arc"); // null for a plain Sphere
+
+            Vector3 pos    = posLeaf != null ? GizmoVec(posLeaf) : Vector3.zero;
+            Vector3 angles = angLeaf != null ? GizmoVec(angLeaf) : Vector3.zero;
+            Vector3 scale  = sclLeaf != null ? GizmoVec(sclLeaf) : Vector3.one;
+            if (scale.sqrMagnitude < 1e-9f) scale = Vector3.one;
+            float radius   = radLeaf != null ? GizmoFloat(radLeaf) : 1f;
+            bool fullArc   = arcLeaf == null;
+            float arcDeg   = fullArc ? 360f : Mathf.Clamp(GizmoFloat(arcLeaf) * Mathf.Rad2Deg, 0f, 360f);
+
+            Matrix4x4 baseMatrix = local ? t.localToWorldMatrix : Matrix4x4.identity;
+            Quaternion rot = Quaternion.Euler(angles);
+
+            DrawSpaceTransformHandle(baseMatrix, pos, rot, scale, posLeaf, angLeaf, sclLeaf);
+
+            Matrix4x4 sphereMatrix = baseMatrix * Matrix4x4.TRS(pos, rot, scale);
+            using (new Handles.DrawingScope(sphereMatrix))
+            {
+                // shell (cosmetic → Repaint only; drawing on other events corrupts GL state)
+                if (Event.current.type == EventType.Repaint)
+                {
+                    if (fullArc)
+                    {
+                        Handles.DrawWireDisc(Vector3.zero, Vector3.forward, radius);
+                        Handles.DrawWireDisc(Vector3.zero, Vector3.up, radius);
+                        Handles.DrawWireDisc(Vector3.zero, Vector3.right, radius);
+                    }
+                    else
+                    {
+                        // longitudinal half-circles at every 90° up to the arc, plus one at
+                        // the arc edge, plus the equator arc (mirrors VFXArcSphereGizmo)
+                        for (int i = 0; i < 4; i++)
+                        {
+                            float a = i * 90f;
+                            if (a <= arcDeg)
+                                Handles.DrawWireArc(Vector3.zero,
+                                    Matrix4x4.Rotate(Quaternion.Euler(0f, 180f, a)) * Vector3.right,
+                                    Vector3.forward, 180f, radius);
+                        }
+                        if (arcDeg < 360f)
+                            Handles.DrawWireArc(Vector3.zero,
+                                Matrix4x4.Rotate(Quaternion.Euler(0f, 180f, arcDeg)) * Vector3.right,
+                                Vector3.forward, 180f, radius);
+                        Handles.DrawWireArc(Vector3.zero, -Vector3.forward, Vector3.up, arcDeg, radius);
+                    }
+                }
+
+                // three radial cube radius handles (one per axis), like VFX
+                if (radLeaf != null)
+                {
+                    foreach (var dir in s_SphereRadiusDirs)
+                    {
+                        float nr = RadialRadiusHandle(Vector3.zero, dir, radius, AxisColor(dir));
+                        if (!Mathf.Approximately(nr, radius)) { CommitGizmoFloat(radLeaf, nr); radius = nr; }
+                    }
+                }
+
+                // arc handle in the equator plane (VFX uses Euler(-90,0,0) so the sweep
+                // axis maps to -forward, matching the equator arc drawn above)
+                if (arcLeaf != null)
+                    ArcHandle(arcLeaf, Vector3.zero, radius, arcDeg, Quaternion.Euler(-90f, 0f, 0f));
+            }
+
+            // label, anchored to the sphere centre on screen (outside the matrix scope)
+            Vector3 worldCenter = sphereMatrix.MultiplyPoint(Vector3.zero);
+            string txt = $"<b>{_gizmoStruct.Label}</b>\nradius {radius:0.##}";
+            if (arcLeaf != null) txt += $"  arc {arcDeg:0}°";
+            GizmoLabel(worldCenter, HandleUtility.GetHandleSize(worldCenter), txt);
+        }
+
+        // X=red, Y=green, Z=blue for a cardinal-ish direction.
+        static Color AxisColor(Vector3 dir)
+        {
+            Vector3 a = new Vector3(Mathf.Abs(dir.x), Mathf.Abs(dir.y), Mathf.Abs(dir.z));
+            return (a.x >= a.y && a.x >= a.z) ? Handles.xAxisColor
+                 : (a.y >= a.z) ? Handles.yAxisColor : Handles.zAxisColor;
+        }
+
+        // In-plane cardinal directions for a circle's radius handles (VFX order: the arc
+        // sweeps from +up, so handle i sits at i×90° and is hidden past the arc).
+        static readonly Vector3[] s_CircleRadiusDirs = { Vector3.up, Vector3.right, Vector3.down, Vector3.left };
+
+        // Mirrors the VFX package's VFXCircleGizmo / VFXArcCircleGizmo (both internal). The
+        // circle lies in the XY plane (normal -forward); a plain Circle has no arc leaf, so
+        // it draws a full disc and all four radius handles.
+        void DrawCircleGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var posLeaf = GizmoLeaf(leaves, "position");
+            var angLeaf = GizmoLeaf(leaves, "angle");
+            var sclLeaf = GizmoLeaf(leaves, "scale");
+            var radLeaf = GizmoLeaf(leaves, "radius");
+            var arcLeaf = GizmoLeaf(leaves, "arc"); // null for a plain Circle
+
+            Vector3 pos    = posLeaf != null ? GizmoVec(posLeaf) : Vector3.zero;
+            Vector3 angles = angLeaf != null ? GizmoVec(angLeaf) : Vector3.zero;
+            Vector3 scale  = sclLeaf != null ? GizmoVec(sclLeaf) : Vector3.one;
+            if (scale.sqrMagnitude < 1e-9f) scale = Vector3.one;
+            float radius   = radLeaf != null ? GizmoFloat(radLeaf) : 1f;
+            bool fullArc   = arcLeaf == null;
+            float arcDeg   = fullArc ? 360f : Mathf.Clamp(GizmoFloat(arcLeaf) * Mathf.Rad2Deg, 0f, 360f);
+
+            Matrix4x4 baseMatrix = local ? t.localToWorldMatrix : Matrix4x4.identity;
+            Quaternion rot = Quaternion.Euler(angles);
+            DrawSpaceTransformHandle(baseMatrix, pos, rot, scale, posLeaf, angLeaf, sclLeaf);
+
+            Matrix4x4 m = baseMatrix * Matrix4x4.TRS(pos, rot, scale);
+            using (new Handles.DrawingScope(m))
+            {
+                if (Event.current.type == EventType.Repaint)
+                {
+                    if (fullArc) Handles.DrawWireDisc(Vector3.zero, -Vector3.forward, radius);
+                    else Handles.DrawWireArc(Vector3.zero, -Vector3.forward, Vector3.up, arcDeg, radius);
+                }
+
+                if (radLeaf != null)
+                    for (int i = 0; i < s_CircleRadiusDirs.Length; i++)
+                    {
+                        if (!fullArc && i * 90f > arcDeg) continue; // only handles within the arc (VFX countVisible)
+                        var dir = s_CircleRadiusDirs[i];
+                        float nr = RadialRadiusHandle(Vector3.zero, dir, radius, AxisColor(dir));
+                        if (!Mathf.Approximately(nr, radius)) { CommitGizmoFloat(radLeaf, nr); radius = nr; }
+                    }
+
+                if (arcLeaf != null)
+                    ArcHandle(arcLeaf, Vector3.zero, radius, arcDeg, Quaternion.Euler(-90f, 0f, 0f));
+            }
+
+            Vector3 wc = m.MultiplyPoint(Vector3.zero);
+            string txt = $"<b>{_gizmoStruct.Label}</b>\nradius {radius:0.##}";
+            if (arcLeaf != null) txt += $"  arc {arcDeg:0}°";
+            GizmoLabel(wc, HandleUtility.GetHandleSize(wc), txt);
+        }
+
+        // Cardinal sweep angles at which a torus draws tube cross-sections.
+        static readonly float[] s_TorusAngles = { 0f, 90f, 180f, 270f };
+
+        // Mirrors the VFX package's VFXTorusGizmo / VFXArcTorusGizmo (both internal). The
+        // ring lies in the XY plane (normal forward); the tube cross-sections sweep that
+        // plane from +up around -forward. `majorRadius` is the ring radius, `minorRadius`
+        // the tube thickness. A plain Torus has no arc leaf → full discs, no arc handle.
+        void DrawTorusGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var posLeaf = GizmoLeaf(leaves, "position");
+            var angLeaf = GizmoLeaf(leaves, "angle");
+            var sclLeaf = GizmoLeaf(leaves, "scale");
+            var majLeaf = GizmoLeaf(leaves, "major");
+            var minLeaf = GizmoLeaf(leaves, "minor");
+            var arcLeaf = GizmoLeaf(leaves, "arc"); // null for a plain Torus
+
+            Vector3 pos    = posLeaf != null ? GizmoVec(posLeaf) : Vector3.zero;
+            Vector3 angles = angLeaf != null ? GizmoVec(angLeaf) : Vector3.zero;
+            Vector3 scale  = sclLeaf != null ? GizmoVec(sclLeaf) : Vector3.one;
+            if (scale.sqrMagnitude < 1e-9f) scale = Vector3.one;
+            float major    = majLeaf != null ? GizmoFloat(majLeaf) : 1f;
+            float minor    = minLeaf != null ? GizmoFloat(minLeaf) : 0.1f;
+            bool fullArc   = arcLeaf == null;
+            float arcDeg   = fullArc ? 360f : Mathf.Clamp(GizmoFloat(arcLeaf) * Mathf.Rad2Deg, 0f, 360f);
+
+            Matrix4x4 baseMatrix = local ? t.localToWorldMatrix : Matrix4x4.identity;
+            Quaternion rot = Quaternion.Euler(angles);
+            DrawSpaceTransformHandle(baseMatrix, pos, rot, scale, posLeaf, angLeaf, sclLeaf);
+
+            Matrix4x4 m = baseMatrix * Matrix4x4.TRS(pos, rot, scale);
+            using (new Handles.DrawingScope(m))
+            {
+                if (Event.current.type == EventType.Repaint)
+                {
+                    // ring envelope: two side discs offset ±minor, plus outer/inner rings
+                    if (fullArc)
+                    {
+                        Handles.DrawWireDisc(Vector3.forward * minor, Vector3.forward, major);
+                        Handles.DrawWireDisc(Vector3.back * minor, Vector3.forward, major);
+                        Handles.DrawWireDisc(Vector3.zero, Vector3.forward, major + minor);
+                        Handles.DrawWireDisc(Vector3.zero, Vector3.forward, Mathf.Max(0f, major - minor));
+                    }
+                    else
+                    {
+                        Handles.DrawWireArc(Vector3.forward * minor, Vector3.back, Vector3.up, arcDeg, major);
+                        Handles.DrawWireArc(Vector3.back * minor, Vector3.back, Vector3.up, arcDeg, major);
+                        Handles.DrawWireArc(Vector3.zero, Vector3.back, Vector3.up, arcDeg, major + minor);
+                        Handles.DrawWireArc(Vector3.zero, Vector3.back, Vector3.up, arcDeg, Mathf.Max(0f, major - minor));
+                    }
+                    // tube cross-sections at the cardinal sweep angles within the arc
+                    foreach (var a in s_TorusAngles)
+                    {
+                        if (!fullArc && a > arcDeg) continue;
+                        Quaternion ar = Quaternion.AngleAxis(a, Vector3.back);
+                        Handles.DrawWireDisc(ar * Vector3.up * major, ar * Vector3.right, minor);
+                    }
+                }
+
+                // major radius handle along +up (the angle-0 cross-section direction)
+                if (majLeaf != null)
+                {
+                    float nm = RadialRadiusHandle(Vector3.zero, Vector3.up, major, Handles.yAxisColor);
+                    if (!Mathf.Approximately(nm, major)) { CommitGizmoFloat(majLeaf, nm); major = nm; }
+                }
+                // minor radius (thickness) handle at the angle-0 cap, offset out of the ring plane
+                if (minLeaf != null)
+                {
+                    float nt = RadialRadiusHandle(Vector3.up * major, Vector3.forward, minor, Handles.zAxisColor);
+                    if (!Mathf.Approximately(nt, minor)) { CommitGizmoFloat(minLeaf, nt); minor = nt; }
+                }
+
+                if (arcLeaf != null)
+                    ArcHandle(arcLeaf, Vector3.zero, major, arcDeg, Quaternion.Euler(-90f, 0f, 0f));
+            }
+
+            Vector3 wc = m.MultiplyPoint(Vector3.zero);
+            string txt = $"<b>{_gizmoStruct.Label}</b>\nmajor {major:0.##}  minor {minor:0.##}";
+            if (arcLeaf != null) txt += $"\narc {arcDeg:0}°";
+            GizmoLabel(wc, HandleUtility.GetHandleSize(wc), txt);
+        }
+
+        // Radial directions for the side lines of a full (un-arc'd) cone outline.
+        static readonly Vector3[] s_ConeDirs = { Vector3.forward, Vector3.back, Vector3.left, Vector3.right };
+
+        // Mirrors the VFX package's VFXConeGizmo / VFXTArcConeGizmo (both internal) on the
+        // public Handles API. The transform (move/rotate/scale) handle runs in the base
+        // frame — component transform for Local space, identity for World, like
+        // VFXSpaceableGizmo's Handles.matrix; the cone shape and its radius/height/arc
+        // handles are drawn inside that frame × the cone's own TRS. A plain Cone has no
+        // arc leaf, so the arc handle and the wedge edges are skipped.
+        void DrawConeGizmo(List<VfxExposedParam> leaves, UnityEngine.Transform t, bool local)
+        {
+            var posLeaf    = GizmoLeaf(leaves, "position");
+            var angLeaf    = GizmoLeaf(leaves, "angle");
+            var sclLeaf    = GizmoLeaf(leaves, "scale");
+            var baseLeaf   = GizmoLeaf(leaves, "base");
+            var topLeaf    = GizmoLeaf(leaves, "top");
+            var heightLeaf = GizmoLeaf(leaves, "height");
+            var arcLeaf    = GizmoLeaf(leaves, "arc"); // null for a plain Cone
+
+            Vector3 pos    = posLeaf != null ? GizmoVec(posLeaf) : Vector3.zero;
+            Vector3 angles = angLeaf != null ? GizmoVec(angLeaf) : Vector3.zero;
+            Vector3 scale  = sclLeaf != null ? GizmoVec(sclLeaf) : Vector3.one;
+            if (scale.sqrMagnitude < 1e-9f) scale = Vector3.one; // avoid a degenerate matrix
+            float baseR    = baseLeaf   != null ? GizmoFloat(baseLeaf)   : 1f;
+            float topR     = topLeaf    != null ? GizmoFloat(topLeaf)    : 0f;
+            float height   = heightLeaf != null ? GizmoFloat(heightLeaf) : 1f;
+            bool fullArc   = arcLeaf == null;
+            float arcDeg   = fullArc ? 360f : Mathf.Clamp(GizmoFloat(arcLeaf) * Mathf.Rad2Deg, 0f, 360f);
+
+            Matrix4x4 baseMatrix = local ? t.localToWorldMatrix : Matrix4x4.identity;
+            Quaternion rot = Quaternion.Euler(angles);
+
+            DrawSpaceTransformHandle(baseMatrix, pos, rot, scale, posLeaf, angLeaf, sclLeaf);
+
+            // ---- cone shape + radius/height/arc handles, in the cone's own frame ----
+            Matrix4x4 coneMatrix = baseMatrix * Matrix4x4.TRS(pos, rot, scale);
+            Vector3 bottomCap = Vector3.zero;
+            Vector3 topCap = Vector3.up * height;
+
+            using (new Handles.DrawingScope(coneMatrix))
+            {
+                // outline (cosmetic → Repaint only; drawing on other events corrupts GL state)
+                if (Event.current.type == EventType.Repaint)
+                {
+                    if (fullArc)
+                    {
+                        Handles.DrawWireDisc(topCap, Vector3.up, topR);
+                        Handles.DrawWireDisc(bottomCap, Vector3.up, baseR);
+                        foreach (var d in s_ConeDirs)
+                            Handles.DrawLine(topCap + d * topR, bottomCap + d * baseR);
+                    }
+                    else
+                    {
+                        Vector3 arcDir = Quaternion.AngleAxis(arcDeg, Vector3.up) * Vector3.forward;
+                        Handles.DrawWireArc(topCap, Vector3.up, Vector3.forward, arcDeg, topR);
+                        Handles.DrawWireArc(bottomCap, Vector3.up, Vector3.forward, arcDeg, baseR);
+                        Handles.DrawLine(topCap, topCap + Vector3.forward * topR);
+                        Handles.DrawLine(bottomCap, bottomCap + Vector3.forward * baseR);
+                        Handles.DrawLine(topCap, topCap + arcDir * topR);
+                        Handles.DrawLine(bottomCap, bottomCap + arcDir * baseR);
+                        Handles.DrawLine(bottomCap + Vector3.forward * baseR, topCap + Vector3.forward * topR);
+                        Handles.DrawLine(bottomCap + arcDir * baseR, topCap + arcDir * topR);
+                    }
+                }
+
+                // radius handles (radial cube sliders at the +forward extremity of each cap)
+                if (baseLeaf != null)
+                {
+                    float nb = RadialRadiusHandle(bottomCap, Vector3.forward, baseR, Handles.zAxisColor);
+                    if (!Mathf.Approximately(nb, baseR)) CommitGizmoFloat(baseLeaf, nb);
+                }
+                if (topLeaf != null)
+                {
+                    float nt = RadialRadiusHandle(topCap, Vector3.forward, topR, Handles.zAxisColor);
+                    if (!Mathf.Approximately(nt, topR)) CommitGizmoFloat(topLeaf, nt);
+                }
+
+                // height handle (slide the top cap along up)
+                if (heightLeaf != null)
+                {
+                    Handles.color = Handles.yAxisColor;
+                    EditorGUI.BeginChangeCheck();
+                    Vector3 nh = Handles.Slider(topCap, Vector3.up,
+                        HandleUtility.GetHandleSize(topCap) * 0.08f, Handles.CubeHandleCap, 0f);
+                    if (EditorGUI.EndChangeCheck()) CommitGizmoFloat(heightLeaf, nh.y);
+                }
+
+                // arc handle (Slider2D in the cap plane, like VFXGizmo.ArcGizmo)
+                if (arcLeaf != null)
+                {
+                    float arcRadius = Mathf.Max(baseR, topR);
+                    Vector3 arcCenter = baseR >= topR ? bottomCap : topCap;
+                    ArcHandle(arcLeaf, arcCenter, arcRadius, arcDeg, Quaternion.identity);
+                }
+            }
+
+            // label, anchored to the cone base position on screen (outside the matrix scope)
+            Vector3 worldBase = coneMatrix.MultiplyPoint(bottomCap);
+            string txt = $"<b>{_gizmoStruct.Label}</b>\nbase {baseR:0.##}  top {topR:0.##}  h {height:0.##}";
+            if (arcLeaf != null) txt += $"\narc {arcDeg:0}°";
+            GizmoLabel(worldBase, HandleUtility.GetHandleSize(worldBase), txt);
+        }
+
+        // A radial cube slider `dir * radius` out from `center`; returns the new
+        // (non-negative) radius. Must be called inside the shape's matrix scope.
+        float RadialRadiusHandle(Vector3 center, Vector3 dir, float radius, Color color)
+        {
+            Vector3 hp = center + dir * radius;
+            Handles.color = color;
+            EditorGUI.BeginChangeCheck();
+            Vector3 np = Handles.Slider(hp, dir,
+                HandleUtility.GetHandleSize(hp) * 0.08f, Handles.CubeHandleCap, 0f);
+            return EditorGUI.EndChangeCheck() ? Mathf.Max(0f, Vector3.Dot(np - center, dir)) : radius;
+        }
+
+        // Arc handle, mirroring VFXGizmo.ArcGizmo: a Slider2D whose angle around the local
+        // +up axis (after `rotation`) sets the arc. Must be called inside the shape's matrix
+        // scope. `rotation` orients the sweep plane (identity for cones, Euler(-90,0,0) so a
+        // sphere sweeps around -forward).
+        void ArcHandle(VfxExposedParam arcLeaf, Vector3 center, float radius, float arcDeg, Quaternion rotation)
+        {
+            if (radius < 1e-5f) return;
+            using (new Handles.DrawingScope(Handles.matrix * Matrix4x4.Translate(center) * Matrix4x4.Rotate(rotation)))
+            {
+                Vector3 handlePos = Quaternion.AngleAxis(arcDeg, Vector3.up) * Vector3.forward * radius;
+                if (!float.IsFinite(handlePos.sqrMagnitude)) return;
+                Handles.color = Handles.centerColor;
+                EditorGUI.BeginChangeCheck();
+                Vector3 np = Handles.Slider2D(handlePos, Vector3.up, Vector3.forward, Vector3.right,
+                    HandleUtility.GetHandleSize(handlePos) * 0.1f, Handles.SphereHandleCap, Vector2.zero);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    float newArc = Vector3.Angle(Vector3.forward, np) * Mathf.Sign(Vector3.Dot(Vector3.right, np));
+                    arcDeg += Mathf.DeltaAngle(arcDeg, newArc);
+                    arcDeg = Mathf.Repeat(arcDeg, 360f);
+                    CommitGizmoFloat(arcLeaf, arcDeg * Mathf.Deg2Rad);
+                }
+            }
+        }
+
+        float GizmoFloat(VfxExposedParam leaf) => ToFloat(VfxPropertySheet.GetValue(_so, leaf));
+
+        void CommitGizmoFloat(VfxExposedParam leaf, float value)
+        {
+            SetValueAll(leaf, value);
+            RefreshProperty(leaf); // sync the bound field in the window
         }
 
         void CommitGizmo(VfxExposedParam leaf, Vector3 value)
