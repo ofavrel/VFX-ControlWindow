@@ -1,0 +1,261 @@
+/* ============================================================================
+   Unity Design System — Colors & Type
+   Source of truth: Unity Editor Foundations (foundations.unity.com)
+   - Color Palette: every value below is taken from the official USS color
+     variable reference (dark + light themes).
+   - Typography: Inter type scale + line-height metrics.
+   This file defines (1) raw brand + Editor palette tokens, (2) the type
+   system, and (3) semantic aliases for everyday use.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ------------------------------------------------------------------ */
+  /* 1. BRAND (corporate / marketing — monochrome-forward rebrand)      */
+  /* ------------------------------------------------------------------ */
+  --u-brand-black:   #000000;  /* logo, primary brand mark            */
+  --u-brand-white:   #ffffff;
+  --u-brand-ink:     #1a1a1a;  /* near-black used for brand text      */
+  --u-brand-gray-1:  #4c4c4c;  /* secondary brand gray                */
+  --u-brand-gray-2:  #808080;  /* tertiary brand gray                 */
+  --u-brand-gray-3:  #c4c4c4;  /* hairlines on light brand surfaces   */
+  --u-brand-blue:    #2196f3;  /* interactive / link accent           */
+
+  /* ------------------------------------------------------------------ */
+  /* 2. EDITOR — DARK THEME (default product UI)                        */
+  /*    Names mirror Unity's --unity-colors-* USS variables.            */
+  /* ------------------------------------------------------------------ */
+
+  /* Base 1 — Application bar & player controls */
+  --uc-app_toolbar-bg:                 #191919;
+  --uc-app_toolbar_button-bg:          #383838;
+  --uc-app_toolbar_button-bg-checked:  #6a6a6a;
+  --uc-app_toolbar_button-bg-hover:    #424242;
+  --uc-app_toolbar_button-bg-pressed:  #6a6a6a;
+  --uc-app_toolbar_button-border:      #191919;
+  --uc-app_toolbar_button-border_accent: #222222;
+
+  /* Base 2 — Windows, components */
+  --uc-window-bg:               #383838;  /* main window surface         */
+  --uc-window-border:           #242424;
+  --uc-default-bg:              #282828;  /* recessed control bg         */
+  --uc-default-border:          #232323;
+  --uc-alternated_rows-bg:      #3f3f3f;  /* zebra striping              */
+  --uc-inspector_titlebar-bg:        #3e3e3e;
+  --uc-inspector_titlebar-bg-hover:  #474747;
+  --uc-inspector_titlebar-border:        #1a1a1a;
+  --uc-inspector_titlebar-border_accent: #303030;
+
+  /* Buttons */
+  --uc-button-bg:               #585858;
+  --uc-button-bg-focus:         #6e6e6e;
+  --uc-button-bg-hover:         #676767;
+  --uc-button-bg-pressed:       #46607c;  /* blue when actively pressed  */
+  --uc-button-bg-hover_pressed: #4f657f;
+  --uc-button-border:           #303030;
+  --uc-button-border_accent:    #242424;
+  --uc-button-border-pressed:   #0d0d0d;
+  --uc-button-border_accent-focus: #7baefa;
+  --uc-button-text:             #eeeeee;
+
+  /* Dropdown / pop-up */
+  --uc-dropdown-bg:             #515151;
+  --uc-dropdown-bg-hover:       #585858;
+  --uc-dropdown-border:         #303030;
+  --uc-dropdown-border_accent:  #242424;
+  --uc-dropdown-text:           #e4e4e4;
+
+  /* Help box */
+  --uc-helpbox-bg:              rgba(96, 96, 96, 0.204);
+  --uc-helpbox-border:          #232323;
+  --uc-helpbox-text:            #bdbdbd;
+
+  /* Input fields (numeric / search / text) */
+  --uc-input_field-bg:          #2a2a2a;
+  --uc-input_field-border:      #212121;
+  --uc-input_field-border_accent: #0d0d0d;
+  --uc-input_field-border-focus:  #3a79bb;
+  --uc-input_field-border-hover:  #656565;
+
+  /* Object field */
+  --uc-object_field-bg:         #282828;
+  --uc-object_field-border:     #202020;
+  --uc-object_field_button-bg:        #373737;
+  --uc-object_field_button-bg-hover:  #4c4c4c;
+
+  /* Header bar (multi-column) */
+  --uc-headerbar-bg:            #3c3c3c;
+  --uc-headerbar_column-bg-hover:   #464646;
+  --uc-headerbar_column-bg-pressed: #505050;
+
+  /* Scrollbar */
+  --uc-scrollbar_thumb-bg:        #5f5f5f;
+  --uc-scrollbar_thumb-bg-hover:  #686868;
+  --uc-scrollbar_thumb-border:    #323232;
+  --uc-scrollbar_groove-bg:       rgba(0, 0, 0, 0.051);
+
+  /* Slider */
+  --uc-slider_groove-bg:        #5e5e5e;
+  --uc-slider_thumb-bg:         #999999;
+  --uc-slider_thumb-bg-hover:   #eaeaea;
+  --uc-slider_thumb_halo-bg:    rgba(16, 111, 205, 0.502);
+
+  /* Tabs */
+  --uc-tab-bg:                  #353535;
+  --uc-tab-bg-checked:          #3c3c3c;
+  --uc-tab-bg-hover:            #303030;
+
+  /* Toolbars (Base 3) */
+  --uc-toolbar-bg:              #3c3c3c;
+  --uc-toolbar-border:          #232323;
+  --uc-toolbar_button-bg:           #3c3c3c;
+  --uc-toolbar_button-bg-checked:   #505050;
+  --uc-toolbar_button-bg-hover:     #464646;
+  --uc-toolbar_button-bg-focus:     #464646;
+  --uc-toolbar_button-border:       #232323;
+
+  /* Selection / highlight */
+  --uc-highlight-bg:                #2c5d87;  /* focused selection       */
+  --uc-highlight-bg-inactive:       #4d4d4d;  /* unfocused selection     */
+  --uc-highlight-bg-hover:          rgba(255, 255, 255, 0.063);
+  --uc-highlight-bg-hover-lighter:  #5f5f5f;
+
+  /* Text */
+  --uc-default-text:        #d2d2d2;
+  --uc-default-text-hover:  #bdbdbd;
+  --uc-window-text:         #bdbdbd;
+  --uc-label-text:          #c4c4c4;
+  --uc-label-text-focus:    #81b4ff;
+  --uc-tab-text:            #bdbdbd;
+  --uc-toolbar_button-text: #c4c4c4;
+  --uc-preview_overlay-text: #dedede;
+  --uc-highlight-text:      #4c7eff;
+
+  /* Status / semantic text */
+  --uc-error-text:    #d32222;
+  --uc-warning-text:  #f4bc02;
+  --uc-link-text:     #4c7eff;
+  --uc-visited_link-text: #ff00ff;
+  --uc-success:       #7ad17a;   /* console success / version-control add */
+
+  /* ------------------------------------------------------------------ */
+  /* 3. EDITOR — LIGHT THEME (selected key tokens, opt-in)              */
+  /* ------------------------------------------------------------------ */
+  --ucl-window-bg:      #c8c8c8;
+  --ucl-default-bg:     #a5a5a5;
+  --ucl-toolbar-bg:     #cbcbcb;
+  --ucl-app_toolbar-bg: #8a8a8a;
+  --ucl-button-bg:      #e4e4e4;
+  --ucl-input_field-bg: #f0f0f0;
+  --ucl-highlight-bg:   #3a72b0;
+  --ucl-default-text:   #090909;
+  --ucl-label-text:     #090909;
+  --ucl-window-border:  #939393;
+
+  /* ------------------------------------------------------------------ */
+  /* 4. TYPOGRAPHY                                                      */
+  /* ------------------------------------------------------------------ */
+  --u-font-ui:  'Inter', Verdana, 'Lucida Grande', system-ui, sans-serif;
+  --u-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  /* Inter primary type scale (Unity USS metrics) */
+  --u-fs-tiny:       9px;   /* --unity-metrics-default-font_tiny_size      */
+  --u-fs-small:      10px;  /* --unity-metrics-default-font_small_size     */
+  --u-fs-semi-small: 11px;  /* --unity-metrics-default-font_semi_small_size*/
+  --u-fs-normal:     12px;  /* --unity-metrics-default-font_normal_size    */
+  --u-fs-big:        14px;  /* --unity-metrics-default-font_big_size       */
+  --u-fs-very-big:   19px;  /* --unity-metrics-default-font_very_big_size  */
+
+  /* Line-height metrics */
+  --u-lh-small:  16px;  /* mini toggle / mini field            */
+  --u-lh-base:   18px;  /* one-line text field                 */
+  --u-lh-large:  20px;  /* inspector title-bar label           */
+
+  --u-fw-regular:  400;
+  --u-fw-medium:   500;
+  --u-fw-semibold: 600;
+  --u-fw-bold:     700;
+
+  /* ------------------------------------------------------------------ */
+  /* 5. SHAPE / METRICS                                                 */
+  /*    Unity Editor is flat: tiny radii, hairline borders.             */
+  /* ------------------------------------------------------------------ */
+  --u-radius-none:  0px;
+  --u-radius-sm:    2px;   /* buttons, fields, dropdowns          */
+  --u-radius-md:    3px;   /* cards / larger controls             */
+  --u-radius-pill:  9999px;
+
+  /* Compact 4px spacing grid */
+  --u-space-1: 2px;
+  --u-space-2: 4px;
+  --u-space-3: 6px;
+  --u-space-4: 8px;
+  --u-space-5: 12px;
+  --u-space-6: 16px;
+  --u-space-7: 24px;
+}
+
+/* ============================================================================
+   SEMANTIC TYPE ROLES — apply directly to elements.
+   The Editor is a dense desktop app: roles are few and small on purpose.
+   ============================================================================ */
+
+.u-window-title { /* Project Settings-style window header */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-very-big);
+  font-weight: var(--u-fw-semibold);
+  line-height: var(--u-lh-large);
+  color: var(--uc-default-text);
+}
+
+.u-titlebar { /* Inspector / foldout title bar label */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-normal);
+  font-weight: var(--u-fw-bold);
+  line-height: var(--u-lh-large);
+  color: var(--uc-default-text);
+}
+
+.u-label { /* default control / property label */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-normal);
+  font-weight: var(--u-fw-regular);
+  line-height: var(--u-lh-base);
+  color: var(--uc-label-text);
+}
+
+.u-body { /* window body text */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-normal);
+  font-weight: var(--u-fw-regular);
+  line-height: var(--u-lh-base);
+  color: var(--uc-window-text);
+}
+
+.u-caption { /* helpbox / secondary */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-semi-small);
+  line-height: var(--u-lh-small);
+  color: var(--uc-helpbox-text);
+}
+
+.u-mini { /* grid labels, timeline / profiler tracks */
+  font-family: var(--u-font-ui);
+  font-size: var(--u-fs-small);
+  line-height: var(--u-lh-small);
+  color: var(--uc-label-text);
+}
+
+.u-link {
+  color: var(--uc-link-text);
+  text-decoration: none;
+}
+.u-link:hover { text-decoration: underline; }
+
+.u-mono { /* console / code */
+  font-family: var(--u-font-mono);
+  font-size: var(--u-fs-normal);
+  line-height: var(--u-lh-base);
+  color: var(--uc-default-text);
+}

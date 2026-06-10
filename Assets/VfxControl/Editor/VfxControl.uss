@@ -1,0 +1,636 @@
+/* VFX Control — styling. Colors bind to Unity's built-in --unity-* USS
+   variables so the window tracks the user's Editor theme automatically; the
+   only hand-authored colors are the category accent dots (a deliberate custom
+   palette, set inline from C#). 8px spacing, 2px control radius. */
+
+.vfx-root {
+    flex-grow: 1;
+    font-size: 12px;
+    background-color: var(--unity-colors-window-background);
+}
+
+.vfx-scroll {
+    flex-grow: 1;
+}
+
+/* ---- window header (EditorWindow draws its own) ---- */
+.vfx-header {
+    flex-direction: row;
+    align-items: center;
+    height: 24px;
+    padding-left: 6px;
+    padding-right: 6px;
+    background-color: var(--unity-colors-toolbar-background);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-toolbar-border);
+}
+
+.vfx-title {
+    -unity-font-style: bold;
+    margin-left: 4px;
+    color: var(--unity-colors-default-text);
+}
+
+.vfx-header-sub {
+    margin-left: 6px;
+    color: var(--unity-colors-label-text);
+    -unity-font-style: italic;
+}
+
+/* ---- asset / meta rows ---- */
+.vfx-meta {
+    padding: 6px 8px 4px 8px;
+}
+
+.vfx-meta-row {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.vfx-mlabel {
+    width: 110px;
+    color: var(--unity-colors-label-text);
+}
+
+.vfx-meta-field {
+    flex-grow: 1;
+}
+
+/* ---- mini transport (persistent) ---- */
+.vfx-sticky-transport {
+    flex-direction: row;
+    align-items: center;
+    padding: 4px 8px;
+    background-color: var(--unity-colors-default-background);
+}
+
+.vfx-tbtn {
+    width: 24px;
+    height: 20px;
+    margin-right: 3px;
+    border-radius: 2px;
+    align-items: center;
+    justify-content: center;
+}
+
+.vfx-tbtn--primary {
+    width: 28px;
+}
+
+.vfx-mini-scrub {
+    flex-grow: 1;
+    height: 6px;
+    margin: 0 8px;
+    border-radius: 3px;
+    background-color: var(--unity-colors-slider_groove-background);
+    overflow: hidden;
+    justify-content: center;
+}
+
+.vfx-mini-fill {
+    height: 6px;
+    background-color: var(--unity-colors-highlight-background);
+}
+
+.vfx-mini-time {
+    -unity-font-definition: resource("Fonts/RobotoMono/RobotoMono-Regular");
+    min-width: 44px;
+    -unity-text-align: middle-right;
+    color: var(--unity-colors-label-text);
+}
+
+.vfx-mini-live {
+    min-width: 56px;
+    margin-left: 8px;
+    -unity-text-align: middle-right;
+    color: var(--unity-colors-highlight-background-hover);
+}
+
+/* ---- recessed divider between asset/playback group and tabs group ---- */
+.vfx-section-gap {
+    height: 9px;
+    background-color: var(--unity-colors-default-background);
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+    border-top-color: var(--unity-colors-default-border);
+    border-bottom-color: var(--unity-colors-default-border);
+}
+
+/* ---- tabs ---- */
+.vfx-tabs {
+    flex-direction: row;
+    height: 30px;
+    background-color: var(--unity-colors-toolbar-background);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-toolbar-border);
+}
+
+.vfx-tab {
+    flex-direction: row;
+    align-items: center;
+    padding: 0 14px;
+    font-size: 13px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-bottom-width: 2px;
+    border-bottom-color: rgba(0, 0, 0, 0);
+    color: var(--unity-colors-label-text);
+    border-radius: 0;
+}
+
+.vfx-tab:hover {
+    background-color: var(--unity-colors-toolbar_button-background-hover);
+}
+
+.vfx-tab--active {
+    color: var(--unity-colors-default-text);
+    border-bottom-color: var(--unity-colors-highlight-background-hover);
+    -unity-font-style: bold;
+}
+
+.vfx-tabcount {
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 8px;
+    font-size: 11px;
+    background-color: var(--unity-colors-default-background);
+    color: var(--unity-colors-label-text);
+}
+
+/* ---- sub bar: search + filter chips ---- */
+.vfx-subbar {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap; /* pills sit right normally, but drop below when very narrow */
+    padding: 6px 8px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-default-border);
+}
+
+.vfx-search {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 96px; /* ~20% narrower so the pills fit to its right in small windows */
+    height: 24px;
+    margin-right: 7px;
+    font-size: 12px;
+}
+.vfx-search > .unity-text-field__input {
+    border-radius: 14px;
+}
+/* enlarge the magnifier glyph inside the search field */
+.vfx-search .unity-search-field-base__search-button {
+    width: 18px;
+    height: 18px;
+    -unity-background-scale-mode: scale-to-fit;
+}
+
+.vfx-filterchips {
+    flex-direction: row;
+    flex-shrink: 0; /* pills keep their size and stay to the right */
+}
+
+.vfx-fchip {
+    flex-direction: row;
+    align-items: center;
+    height: 24px;
+    margin-left: 4px;
+    padding: 0 10px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: var(--unity-colors-button-border);
+    background-color: var(--unity-colors-button-background);
+    color: var(--unity-colors-label-text);
+    font-size: 12px;
+}
+
+.vfx-fchip--active {
+    background-color: var(--unity-colors-highlight-background);
+    color: var(--unity-colors-default-text);
+    border-color: var(--unity-colors-highlight-background-hover);
+}
+
+.vfx-fchip-n {
+    margin-left: 4px;
+    opacity: 0.7;
+}
+
+/* ---- horizontal category rail ---- */
+.vfx-hrail {
+    flex-direction: row;
+    padding: 6px 8px;
+    margin-bottom: 6px; /* gap so the dark rail doesn't merge with the pinned tray below */
+    background-color: var(--unity-colors-default-background); /* recessed/darker band */
+}
+.vfx-hrail > .unity-scroll-view__content-container {
+    flex-direction: row;
+}
+
+.vfx-hrail-btn {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    height: 24px;
+    margin-right: 4px;
+    padding: 0 10px;
+    border-radius: 2px;
+    border-width: 1px;
+    /* no chip frame by default — only the dot + label show */
+    border-color: rgba(0, 0, 0, 0);
+    background-color: rgba(0, 0, 0, 0);
+    color: var(--unity-colors-label-text);
+    font-size: 12px;
+}
+
+/* the chip (fill + border) appears on the button under the cursor */
+.vfx-hrail-btn:hover {
+    background-color: var(--unity-colors-button-background);
+    border-color: var(--unity-colors-button-border);
+}
+
+/* active category: highlighted in blue, always */
+.vfx-hrail-btn--active {
+    background-color: var(--unity-colors-highlight-background);
+    border-color: var(--unity-colors-highlight-background);
+    color: var(--unity-colors-default-text);
+}
+
+.vfx-rail-dot, .vfx-dot, .vfx-pincard-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+    margin-right: 6px;
+    flex-shrink: 0;
+    align-self: center; /* vertically center the dot within its row */
+}
+
+/* ---- pinned tray ---- */
+.vfx-pinned {
+    margin: 0 8px 6px 8px;
+    padding: 6px;
+    border-radius: 3px;
+    background-color: var(--unity-colors-default-background);
+}
+
+.vfx-pinned-head {
+    flex-direction: row;
+    align-items: center;
+    color: var(--unity-colors-label-text);
+    -unity-font-style: bold;
+}
+
+.vfx-pinned-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+.vfx-pincard {
+    width: 49%;
+    margin: 0 1% 6px 0;
+    padding: 5px 6px;
+    border-radius: 3px;
+    background-color: var(--unity-colors-window-background);
+    border-width: 1px;
+    border-color: var(--unity-colors-default-border);
+}
+
+.vfx-pincard-top {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 3px;
+}
+
+.vfx-pincard-label {
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--unity-colors-label-text);
+    font-size: 11px;
+}
+
+/* ---- category groups (custom collapsible) ---- */
+.vfx-group {
+    margin: 6px 8px 0 8px; /* space above each category so they stand apart */
+}
+
+.vfx-group-header {
+    flex-direction: row;
+    align-items: center;
+    height: 22px;
+    padding: 0 4px;
+    border-radius: 2px;
+    background-color: var(--unity-colors-inspector_titlebar-background);
+}
+.vfx-group-header:hover {
+    background-color: var(--unity-colors-inspector_titlebar-background-hover);
+}
+.vfx-group-twirl {
+    width: 14px;
+    font-size: 16px;
+    -unity-text-align: middle-center;
+    color: var(--unity-colors-default-text);
+    margin-right: 2px;
+}
+.vfx-group-title {
+    -unity-font-style: bold;
+    font-size: 13px;
+    flex-grow: 1; /* push the count to the far right */
+    color: var(--unity-colors-default-text);
+}
+.vfx-group-content {
+    padding-left: 14px; /* indent properties under their category */
+}
+
+.vfx-group-dot-host {
+    flex-direction: row;
+    align-items: center;
+}
+
+.vfx-group-count {
+    margin-left: 6px;
+    opacity: 0.65;
+    font-size: 11px;
+    align-self: center;
+}
+
+/* keep the foldout header row (arrow + dot + label + count) vertically centered */
+.vfx-group > .unity-foldout__toggle > .unity-toggle__input {
+    align-items: center;
+}
+
+/* ---- property row ---- */
+.vfx-row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 22px;
+    padding: 1px 2px;
+}
+.vfx-row:hover {
+    background-color: var(--unity-colors-highlight-background-inactive);
+}
+
+/* gutter between the label and the first component holding the constrain lock
+   (kept on every row so the control column stays aligned with/without the lock) */
+.vfx-row-lock {
+    width: 16px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    margin-right: 2px;
+}
+.vfx-lock {
+    width: 16px;
+    height: 16px;
+    display: none; /* unconstrained: only shown on row hover */
+    opacity: 0.6;
+}
+.vfx-row:hover .vfx-lock { display: flex; }
+.vfx-lock:hover { opacity: 1; }
+.vfx-lock--on { display: flex; opacity: 1; } /* active: always shown */
+
+/* fixed-width label column; the label + space icon hug its left edge */
+.vfx-label-col {
+    width: 108px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+}
+.vfx-label-col .vfx-plabel {
+    width: auto;
+    flex-shrink: 1;
+}
+
+.vfx-plabel {
+    width: 108px;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--unity-colors-label-text);
+}
+
+.vfx-row--modified .vfx-plabel {
+    -unity-font-style: bold;
+    color: var(--unity-colors-default-text);
+}
+
+/* compound (struct) parent, e.g. an AABox grouping its center/size */
+.vfx-struct-click {
+    flex-direction: row;
+    align-items: center;
+    flex-grow: 1;
+}
+/* twirl in the left indent — out of flow (no label shift), shown on hover only */
+.vfx-struct-twirl {
+    position: absolute;
+    left: -16px;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    font-size: 16px;
+    -unity-text-align: middle-center;
+    color: var(--unity-colors-label-text);
+    opacity: 0;
+}
+.vfx-struct-row:hover .vfx-struct-twirl {
+    opacity: 1;
+}
+.vfx-struct-label {
+    width: auto;
+    /* not bold by default; bolds via .vfx-row--modified when a child differs from default */
+}
+/* "edit in Scene" gizmo toggle, absolutely placed in the indent left of the label
+   (no layout shift); shown only on row hover or when active */
+.vfx-gizmo-btn {
+    position: absolute;
+    left: -18px;
+    top: 0;
+    bottom: 0;
+    width: 16px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    opacity: 0.5; /* greyed like the reset icon until active */
+    display: none;
+}
+.vfx-row:hover .vfx-gizmo-btn,
+.vfx-gizmo-btn--on {
+    display: flex;
+}
+/* inline variant (in a struct header, next to the space icon) — in flow, not gutter */
+.vfx-gizmo-btn--inline {
+    position: relative;
+    left: auto;
+    top: auto;
+    bottom: auto;
+    width: 16px;
+    height: 16px;
+    margin-left: 3px;
+}
+.vfx-gizmo-btn--on {
+    opacity: 1; /* full strength when active */
+    background-color: var(--unity-colors-highlight-background);
+    border-radius: 2px;
+}
+
+/* read-only coordinate-space icon shown to the right of a spaceable label */
+.vfx-space-icon {
+    width: 16px;
+    height: 16px;
+    margin-left: 4px;
+    flex-shrink: 0;
+    opacity: 0.45; /* greyed out — display only, not editable */
+}
+/* the struct header + its components form one connected card (header = top,
+   content = body), echoing the pinned-card look but lighter than the recessed bg */
+.vfx-struct-row {
+    background-color: var(--unity-colors-alternated_rows-background, var(--unity-colors-button-background));
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+    margin: 6px 4px 0 0; /* gap above the group; left edge aligned with sibling labels */
+}
+.vfx-struct-row:hover {
+    background-color: var(--unity-colors-alternated_rows-background, var(--unity-colors-button-background)); /* keep the card tone (no row wash) */
+}
+.vfx-struct-content {
+    background-color: var(--unity-colors-window-background); /* slightly darker than the header */
+    border-color: var(--unity-colors-alternated_rows-background, var(--unity-colors-button-background)); /* match the header fill */
+    border-left-width: 1px;
+    border-right-width: 1px;
+    border-bottom-width: 1px; /* sides + bottom (open top — no border on the header) */
+    border-bottom-left-radius: 3px;
+    border-bottom-right-radius: 3px;
+    margin: 0 4px 6px 0; /* connects to the header above (no top gap) */
+    padding: 3px 6px 3px 10px; /* left padding indents the components */
+}
+/* nested component labels slightly dimmer than the parent label (visual hierarchy) */
+.vfx-struct-content .vfx-plabel {
+    opacity: 0.8;
+}
+
+/* inline scalar-struct components (Flipbook X/Y …), laid out like a Vector field */
+.vfx-vec-comp {
+    flex-grow: 1;
+    flex-direction: row;
+    align-items: center;
+    min-width: 0;
+    margin-right: 4px;
+}
+.vfx-vec-comp-label {
+    margin-right: 3px;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+.vfx-vec-comp .unity-base-field {
+    flex-grow: 1;
+    min-width: 0;
+    margin: 0;
+}
+.vfx-vec-comp .unity-base-field__label {
+    display: none; /* the mini label replaces the field's own (empty) label */
+}
+
+/* numeric labels are drag-scrub zones — show the native slide cursor */
+.vfx-plabel--drag {
+    cursor: slide-arrow;
+}
+
+.vfx-pcontrol {
+    flex-grow: 1;
+    flex-direction: row;
+    min-width: 0;       /* allow shrinking so wide controls don't overflow under the tools */
+    margin-right: 4px;  /* gap before the reset/favorite tools */
+}
+.vfx-pcontrol > * {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+.vfx-row-tools {
+    flex-direction: row;
+    flex-shrink: 0;
+    width: 38px;
+    justify-content: flex-end;
+}
+
+/* Each tool decides its own visibility independently of the other.
+   Reset toggles with `display` (not opacity) so the --dim opacity used when
+   there's nothing to reset doesn't fight the hide rule. */
+.vfx-tool-reset { display: none; opacity: 0.35; } /* dim when there's nothing to reset */
+.vfx-row:hover .vfx-tool-reset,
+.vfx-row--modified .vfx-tool-reset { display: flex; }
+.vfx-row--modified .vfx-tool-reset { opacity: 1; }
+
+/* same reset behavior inside a pinned card (cards aren't .vfx-row) */
+.vfx-pincard:hover .vfx-tool-reset,
+.vfx-pincard.vfx-row--modified .vfx-tool-reset { display: flex; }
+.vfx-pincard.vfx-row--modified .vfx-tool-reset { opacity: 1; }
+
+.vfx-tool-fav { opacity: 0; }
+.vfx-row:hover .vfx-tool-fav { opacity: 0.5; }   /* greyed on hover until pinned */
+.vfx-row--fav .vfx-tool-fav { opacity: 1; }       /* full when pinned */
+
+.vfx-iconbtn {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    margin-left: 1px;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+}
+.vfx-iconbtn:hover {
+    background-color: var(--unity-colors-button-background-hover);
+    border-radius: 2px;
+}
+.vfx-iconbtn--dim {
+    opacity: 0.35;
+}
+
+/* ---- footer ---- */
+.vfx-footer {
+    flex-direction: row;
+    align-items: center;
+    height: 26px;
+    padding: 0 8px;
+    background-color: var(--unity-colors-toolbar-background);
+    border-top-width: 1px;
+    border-top-color: var(--unity-colors-toolbar-border);
+}
+
+.vfx-foot-note {
+    flex-grow: 1;
+    color: var(--unity-colors-label-text);
+    font-size: 11px;
+}
+
+.vfx-btn {
+    height: 18px;
+    margin-left: 4px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+
+/* ---- empty state ---- */
+.vfx-empty {
+    padding: 18px 12px;
+    white-space: normal;
+    -unity-text-align: middle-center;
+    color: var(--unity-colors-label-text);
+    opacity: 0.75;
+}
+
+.vfx-placeholder {
+    padding: 24px 12px;
+    white-space: normal;
+    -unity-text-align: middle-center;
+    color: var(--unity-colors-label-text);
+}
