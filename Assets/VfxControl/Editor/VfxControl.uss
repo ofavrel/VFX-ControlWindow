@@ -359,6 +359,21 @@
     align-self: center;
 }
 
+/* master enable toggle hoisted into a gated category's header */
+.vfx-group-enable {
+    align-self: center;
+    margin: 0 2px 0 0;
+}
+
+/* dim the header of a gated-off category so the disabled state reads even when collapsed
+   (the body rows are greyed by SetEnabled(false)'s native disabled tint) */
+.vfx-group--gated .vfx-group-title {
+    opacity: 0.5;
+}
+.vfx-group--gated .vfx-dot {
+    opacity: 0.4;
+}
+
 /* keep the foldout header row (arrow + dot + label + count) vertically centered */
 .vfx-group > .unity-foldout__toggle > .unity-toggle__input {
     align-items: center;

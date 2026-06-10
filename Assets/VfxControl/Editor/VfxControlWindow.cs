@@ -613,7 +613,10 @@ namespace VfxControl.EditorTools
                 var display = ComputeDisplay(byCat[cat]);
                 if (display.Count == 0) continue;
                 shownLeaves += display.Count(e => !e.IsStruct);
-                _listContainer.Add(BuildGroup(cat, display, forceOpen));
+                // gate detected from the FULL category list (not the filtered display) so
+                // the header enable toggle still shows even when search hides the bool
+                var gate = FindCategoryGate(cat, byCat[cat]);
+                _listContainer.Add(BuildGroup(cat, display, forceOpen, gate));
             }
 
             if (shownLeaves == 0)
@@ -832,9 +835,13 @@ namespace VfxControl.EditorTools
             return foldout;
         }
 
-        VisualElement BuildGroup(string category, List<VfxExposedParam> props, bool forceOpen)
+        VisualElement BuildGroup(string category, List<VfxExposedParam> props, bool forceOpen, VfxExposedParam gate = null)
         {
             bool open = forceOpen || !_collapsed.Contains(category);
+
+            // a gated category hoists its bool into the header as a master enable toggle;
+            // its own row is dropped from the body to avoid duplication
+            var entries = gate != null ? props.Where(p => p != gate).ToList() : props;
 
             // Custom collapsible (not a Foldout) so the header uses the same ClickEvent +
             // altKey path as struct headers — which reliably carries Alt/Option on macOS.
@@ -850,7 +857,17 @@ namespace VfxControl.EditorTools
             var title = new Label(category);
             title.AddToClassList("vfx-group-title");
             header.Add(title);
-            var count = new Label(props.Count(p => !p.IsStruct).ToString());
+            BaseField<bool> gateToggle = null;
+            if (gate != null)
+            {
+                // master enable toggle; StopPropagation so clicking it doesn't collapse
+                gateToggle = Bind(new Toggle(), gate, null, v => v is bool b && b, v => v);
+                gateToggle.AddToClassList("vfx-group-enable");
+                gateToggle.tooltip = $"Enable “{category}” (drives the exposed “{gate.Label}” bool)";
+                gateToggle.RegisterCallback<ClickEvent>(e => e.StopPropagation());
+                header.Add(gateToggle);
+            }
+            var count = new Label(entries.Count(p => !p.IsStruct).ToString());
             count.AddToClassList("vfx-group-count");
             header.Add(count);
 
@@ -872,11 +889,65 @@ namespace VfxControl.EditorTools
 
             var content = MakeElement("vfx-group-content");
             content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
-            AddDisplayEntries(content, props, forceOpen);
+            AddDisplayEntries(content, entries, forceOpen);
             group.Add(content);
+
+            if (gate != null)
+            {
+                ApplyCategoryGate(group, content, gate);
+                // re-grey live when the toggle flips (its Bind fires RefreshProperty(gate),
+                // which invokes every refresher keyed to gate.Name)
+                RegisterRefresher(gate.Name, () => ApplyCategoryGate(group, content, gate));
+                // deactivating collapses the category to hide the now-irrelevant props;
+                // activating re-opens it. This only drives the normal _collapsed state, so
+                // the header twirl still works to expand a gated-off category and peek at
+                // its greyed values. Fires on real user toggles only (not refresher syncs).
+                if (!forceOpen)
+                    gateToggle.RegisterValueChangedCallback(e =>
+                    {
+                        if (e.newValue) _collapsed.Remove(category); else _collapsed.Add(category);
+                        _state.SaveCollapsed(_collapsed);
+                        bool open2 = !_collapsed.Contains(category);
+                        content.style.display = open2 ? DisplayStyle.Flex : DisplayStyle.None;
+                        twirl.text = open2 ? "▾" : "▸";
+                    });
+            }
 
             return group;
         }
+
+        // Grey-out + lock a category's body when its gate bool is off (block deactivated in
+        // the graph → its parameters are irrelevant). Visual only — collapse is handled
+        // separately so the user can still expand to peek. The toggle lives in the header,
+        // so disabling the whole content is safe — it stays interactive. Ambiguous multi-edit
+        // (mixed values) counts as enabled, so nothing is greyed when unsure.
+        void ApplyCategoryGate(VisualElement group, VisualElement content, VfxExposedParam gate)
+        {
+            bool off = VfxPropertySheet.GetValue(_so, gate) is bool b && !b && !IsMixed(gate);
+            content.SetEnabled(!off);                         // native disabled tint + blocks input
+            group.EnableInClassList("vfx-group--gated", off); // dim the header (reads even when collapsed)
+        }
+
+        // Auto-detect a category's enable gate: a top-level bool leaf whose label matches
+        // the category, or is "Enable <Category>" / "Use <Category>" (case/space-insensitive).
+        VfxExposedParam FindCategoryGate(string category, List<VfxExposedParam> props)
+        {
+            if (category == "Uncategorized" || props.Count == 0) return null;
+            int minDepth = props.Min(p => p.Depth);
+            string cat = NormGate(category);
+            VfxExposedParam fallback = null;
+            foreach (var p in props)
+            {
+                if (p.SheetType != "m_Bool" || p.IsStruct || p.Depth != minDepth) continue;
+                string n = NormGate(p.Label);
+                if (n == cat) return p;                                   // exact name match wins
+                if (fallback == null && (n == "enable" + cat || n == "use" + cat)) fallback = p;
+            }
+            return fallback;
+        }
+
+        static string NormGate(string s) =>
+            string.IsNullOrEmpty(s) ? "" : s.Replace(" ", "").Replace("_", "").ToLowerInvariant();
 
         // Render the ordered (already-filtered) entries, nesting struct children inside
         // their collapsible struct parent so depth maps to real containment.

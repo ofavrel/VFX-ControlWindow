@@ -83,6 +83,17 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   is a **custom collapsible** (NOT a `Foldout`) so headers use a `ClickEvent`+`altKey`
   path that reliably catches Option/Alt on macOS — **Alt/Option+click = expand/collapse all
   nested** (works on category headers and struct headers).
+- **Category enable-gate**: a category whose top-level bool leaf is named like the category
+  (or `Enable/Use <Category>`) auto-promotes that bool to a **master enable toggle** in the
+  group header (`FindCategoryGate`). When off, `ApplyCategoryGate` greys + locks the body
+  (`content.SetEnabled(false)`) and adds `vfx-group--gated` (dims the header); the toggle
+  stays live in the header. Re-applies live via a refresher keyed on the bool's `Name`.
+  Deactivating also **collapses** the category to hide the now-irrelevant props (and
+  activating re-opens it) — but this just drives the normal `_collapsed` state from the
+  toggle's value-changed callback, so the header twirl still expands a gated-off category to
+  **peek** at its greyed values. Purely a UI affordance — the bool is a normal
+  exposed property the author wires to a block's **Activation** port in VFX Graph. Mixed
+  multi-edit → treated as enabled (don't hide when ambiguous).
 - **Rows**: fixed-width label column (label hugs left, space icon after it), constrain
   lock gutter, control, hover-revealed tools (reset ↺ + favorite ★). Tool visibility is
   CSS-driven by `.vfx-row--modified` / `.vfx-row--fav` (reset shows on hover or when
