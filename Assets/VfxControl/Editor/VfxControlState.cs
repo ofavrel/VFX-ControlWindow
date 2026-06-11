@@ -28,6 +28,10 @@ namespace VfxControl.EditorTools
         public static void SetTimelineDuration(float seconds) =>
             EditorPrefs.SetFloat($"{Prefix}.timelineDuration", Mathf.Max(0.1f, seconds));
 
+        // Whether the play clock loops at the end of the window (vs. stopping). Playback-tab toggle.
+        public static bool GetLoop() => EditorPrefs.GetBool($"{Prefix}.loop", true);
+        public static void SetLoop(bool on) => EditorPrefs.SetBool($"{Prefix}.loop", on);
+
         // ---- persistent (EditorPrefs, per asset) ----
 
         string FavKey => $"{Prefix}.{_guid}.favorites";

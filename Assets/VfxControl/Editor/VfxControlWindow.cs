@@ -31,8 +31,9 @@ namespace VfxControl.EditorTools
         const string UssPath = "Assets/VfxControl/Editor/VfxControl.uss";
 
         // configurable timeline/scrub window length (Playback tab); the play clock
-        // fills the bar over this many seconds and then loops.
+        // fills the bar over this many seconds and then loops (or stops, if _loop is off).
         float _duration = 10f;
+        bool _loop = true;
         double _lastTick;
 
         // --- target ---
@@ -60,8 +61,9 @@ namespace VfxControl.EditorTools
         // --- live element refs ---
         VisualElement _miniFill;
         Label _timeLabel, _liveLabel, _footNote;
-        Button _resetAllBtn, _playBtn;
+        Button _resetAllBtn, _playBtn, _loopBtn;
         Image _playIcon;
+        Slider _rateSlider; // Play Rate strip under the transport (resynced by UpdateLive)
         // persistent chrome containers: the search field is built ONCE (so typing never
         // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
         ToolbarSearchField _searchField;
@@ -161,6 +163,7 @@ namespace VfxControl.EditorTools
         void OnEnable()
         {
             _duration = VfxControlState.GetTimelineDuration();
+            _loop = VfxControlState.GetLoop();
             _lastTick = EditorApplication.timeSinceStartup;
             RefreshTarget();
             Undo.undoRedoPerformed += OnUndoRedo;
@@ -417,7 +420,7 @@ namespace VfxControl.EditorTools
                 Build = body => { AddFavoriteGroup(body, includeProps: true, null); PopulateProperties(body); },
                 ChipCounts = PropertyChipCounts,
             },
-            new TabDef { Id = "play", Label = "Playback", HasRail = true, Sections = NoSections, Build = BuildPlaybackTab, ChipCounts = () => (1, IsFav(kDurationFavKey) ? 1 : 0, PlaybackModified() ? 1 : 0) },
+            new TabDef { Id = "play", Label = "Playback", HasRail = true, Sections = PlaybackSections, Build = BuildPlaybackTab, ChipCounts = PlaybackChipCounts },
             new TabDef
             {
                 Id = "debug", Label = "Debug", HasRail = true, Sections = NoSections,
@@ -467,6 +470,14 @@ namespace VfxControl.EditorTools
             new SectionDef { Id = "additional", Label = "Additional Settings" },
         };
 
+        // Playback sections: the setting rows live under "Playback options"; the event controls
+        // get their own "Send Event" section (same collapsible group + rail style as the rest).
+        static List<SectionDef> PlaybackSections() => new List<SectionDef>
+        {
+            new SectionDef { Id = "options", Label = "Playback options" },
+            new SectionDef { Id = "events", Label = "Send Event" },
+        };
+
         // Search + chips chrome. Built once per Rebuild; the search field reference is kept
         // so PopulateActiveTab never recreates it (preserving focus while typing).
         VisualElement BuildChrome()
@@ -507,7 +518,7 @@ namespace VfxControl.EditorTools
             _tabBody.Clear();
             _refreshers.Clear();    // controls about to be discarded
             _structHeaders.Clear();
-            _durationRows.Clear();
+            _playbackRows.Clear();
             def.Build(_tabBody);
 
             UpdateFooter();
@@ -573,63 +584,23 @@ namespace VfxControl.EditorTools
             assetRow.Add(assetField);
             meta.Add(assetRow);
 
-            var eventRow = MakeElement("vfx-meta-row");
-            var eventLabel = new Label("Initial Event");
-            eventLabel.AddToClassList("vfx-mlabel");
-            eventRow.Add(eventLabel);
-            var eventField = new TextField { value = string.IsNullOrEmpty(_effect.initialEventName) ? "OnPlay" : _effect.initialEventName };
-            eventField.AddToClassList("vfx-meta-field");
-            eventField.RegisterValueChangedCallback(e =>
-            {
-                Undo.RecordObjects(_effects.ToArray(), "Set Initial Event");
-                foreach (var ve in _effects) { ve.initialEventName = e.newValue; EditorUtility.SetDirty(ve); }
-            });
-            eventRow.Add(eventField);
-            meta.Add(eventRow);
+            // Initial Event lives in the Playback tab (a PField row), not here — keep the header
+            // to just the asset.
 
             return meta;
         }
 
+        // The persistent transport bar (always visible above the tabs). Two rows:
+        //   row 1 — the full-width scrub bar + time + live count;
+        //   row 2 — the transport buttons (restart · step-back · play/pause · step-forward · loop)
+        //           followed by the Rate slider.
+        // This is the single home for the transport (the Playback tab does not duplicate it).
         VisualElement BuildMiniTransport()
         {
-            var bar = MakeElement("vfx-sticky-transport");
+            var wrap = MakeElement("vfx-transport-wrap"); // column: scrub row + controls row
 
-            _playBtn = new Button(() =>
-            {
-                _effect.pause = !_effect.pause;
-                UpdateLive(); // refreshes the icon from the new pause state
-            });
-            _playBtn.AddToClassList("vfx-tbtn");
-            _playBtn.AddToClassList("vfx-tbtn--primary");
-            // built-in icon drawn 1:1 at native size (no scaling → no aliasing);
-            // centered by the button's flex alignment.
-            _playIcon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
-            _playIcon.style.width = 16;
-            _playIcon.style.height = 16;
-            _playBtn.Add(_playIcon);
-            bar.Add(_playBtn);
-
-            // step one frame: pause, then simulate a single step (handoff API mapping)
-            var step = new Button(() =>
-            {
-                _effect.pause = true;
-                _effect.Simulate(1f / 60f, 1);
-                _scrubT = Mathf.Min(1f, _scrubT + (1f / 60f) / _duration);
-                UpdateLive();
-            });
-            step.AddToClassList("vfx-tbtn");
-            step.tooltip = "Step one frame";
-            var stepIcon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
-            stepIcon.style.width = 16;
-            stepIcon.style.height = 16;
-            stepIcon.image = EditorGUIUtility.IconContent("StepButton").image;
-            step.Add(stepIcon);
-            bar.Add(step);
-
-            var restart = new Button(() => { _effect.Reinit(); _scrubT = 0; UpdateLive(); }) { text = "↺" };
-            restart.AddToClassList("vfx-tbtn");
-            restart.tooltip = "Restart (Reinit)";
-            bar.Add(restart);
+            // ---- row 1: scrub bar (expanded) + time + live ----
+            var top = MakeElement("vfx-transport-row");
 
             var scrub = MakeElement("vfx-mini-scrub");
             _miniFill = MakeElement("vfx-mini-fill");
@@ -638,26 +609,88 @@ namespace VfxControl.EditorTools
             scrub.RegisterCallback<MouseDownEvent>(e => { scrub.CaptureMouse(); ScrubAt(scrub, e.localMousePosition.x); });
             scrub.RegisterCallback<MouseMoveEvent>(e => { if (scrub.HasMouseCapture()) ScrubAt(scrub, e.localMousePosition.x); });
             scrub.RegisterCallback<MouseUpEvent>(e => scrub.ReleaseMouse());
-            bar.Add(scrub);
+            top.Add(scrub);
 
             _timeLabel = new Label("0.00 / 0s");
             _timeLabel.AddToClassList("vfx-mini-time");
-            bar.Add(_timeLabel);
+            top.Add(_timeLabel);
 
             _liveLabel = new Label("0 live");
             _liveLabel.AddToClassList("vfx-mini-live");
-            bar.Add(_liveLabel);
+            top.Add(_liveLabel);
 
-            return bar;
+            wrap.Add(top);
+
+            // ---- row 2: transport buttons + Rate ----
+            var bottom = MakeElement("vfx-transport-row");
+
+            bottom.Add(MakeTransportButton("Restart (Reinit)", null,
+                () => { _effect.Reinit(); _scrubT = 0f; UpdateLive(); }, glyph: "↺"));
+
+            // step-back uses the Step-Forward icon mirrored horizontally (a dedicated glyph read poorly).
+            bottom.Add(MakeTransportButton("Step back one frame", "StepButton", () => StepFrame(-1), mirror: true));
+
+            // primary play/pause; built-in icon drawn 1:1 at native size (no scaling → no
+            // aliasing), kept in sync with the pause state by UpdateLive.
+            _playBtn = MakeTransportButton("Play", null, () => { _effect.pause = !_effect.pause; UpdateLive(); });
+            _playBtn.AddToClassList("vfx-tbtn--primary");
+            _playIcon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+            _playIcon.style.width = 16;
+            _playIcon.style.height = 16;
+            _playBtn.Add(_playIcon);
+            bottom.Add(_playBtn);
+
+            bottom.Add(MakeTransportButton("Step forward one frame", "StepButton", () => StepFrame(1)));
+
+            _loopBtn = MakeTransportButton(_loop ? "Looping (click to stop at end)" : "Stop at end (click to loop)", null, () =>
+            {
+                _loop = !_loop;
+                VfxControlState.SetLoop(_loop);
+                _loopBtn.EnableInClassList("vfx-tbtn--on", _loop);
+                _loopBtn.tooltip = _loop ? "Looping (click to stop at end)" : "Stop at end (click to loop)";
+                UpdateLive();
+            }, glyph: "∞");
+            _loopBtn.EnableInClassList("vfx-tbtn--on", _loop);
+            bottom.Add(_loopBtn);
+
+            // Rate slider, right after the transport buttons (label · 0–10× slider · reset-to-1×);
+            // _rateSlider is resynced by UpdateLive so undo/multi-select stay reflected.
+            var rateLabel = new Label("Rate");
+            rateLabel.AddToClassList("vfx-rate-label");
+            bottom.Add(rateLabel);
+
+            _rateSlider = new Slider(0f, 10f) { showInputField = true, value = _effect != null ? _effect.playRate : 1f };
+            _rateSlider.AddToClassList("vfx-rate-slider");
+            _rateSlider.showMixedValue = EffectsDiffer(ve => ve.playRate);
+            _rateSlider.RegisterValueChangedCallback(e => SetPlayRate(e.newValue));
+            bottom.Add(_rateSlider);
+
+            var rateReset = MakeIconButton("↺", "Reset to 1×", () =>
+            {
+                SetPlayRate(1f);
+                _rateSlider.SetValueWithoutNotify(1f);
+            });
+            rateReset.AddToClassList("vfx-rate-reset");
+            bottom.Add(rateReset);
+
+            wrap.Add(bottom);
+            return wrap;
         }
 
-        // GPU sim has no random-access seek: pause, Reinit, then simulate forward
-        // to the target time. Best-effort and capped (see handoff "Scrubbing caveat").
         void ScrubAt(VisualElement scrub, float localX)
         {
             float w = scrub.layout.width;
             if (w <= 0) return;
-            _scrubT = Mathf.Clamp01(localX / w);
+            SeekTo(localX / w);
+        }
+
+        // GPU sim has no random-access seek: pause, Reinit, then simulate forward to the target
+        // time. Best-effort and capped (see handoff "Scrubbing caveat"). Used by the scrub bar
+        // and the transport's step-back.
+        void SeekTo(float t)
+        {
+            if (_effect == null) return;
+            _scrubT = Mathf.Clamp01(t);
             if (_miniFill != null) _miniFill.style.width = Length.Percent(_scrubT * 100f);
 
             float target = _scrubT * _duration;
@@ -817,7 +850,105 @@ namespace VfxControl.EditorTools
             return string.IsNullOrEmpty(q) || (label != null && label.ToLowerInvariant().Contains(q));
         }
 
-        const string kDurationFavKey = "play:duration";
+        // A Playback setting, modelled like the renderer's RField but backed by live component
+        // props / tool prefs rather than a SerializedProperty: each carries a fav key, modified
+        // test, reset, and a control factory whose `sync` re-reads the value into the control
+        // (so duplicate copies — favorites group + section row — stay coherent, like Duration did).
+        sealed class PField
+        {
+            public string Id, Label, Tooltip;
+            public string FavKey => "play:" + Id;
+            public Func<bool> IsModified;
+            public Action Reset;
+            public Func<(VisualElement control, Action sync)> BuildControl;
+        }
+
+        // The playback settings, in display order. Rebuilt on demand (cheap — just descriptors);
+        // closures capture _effect/_effects/_duration, not specific controls, so this is safe to
+        // call for counts even with no target.
+        List<PField> BuildPlaybackFields()
+        {
+            var list = new List<PField>
+            {
+                new PField
+                {
+                    Id = "duration", Label = "Duration (s)",
+                    Tooltip = "Length of the play/scrub timeline window before it loops.",
+                    IsModified = () => !Mathf.Approximately(_duration, kDefaultDuration),
+                    Reset = () => { _duration = kDefaultDuration; VfxControlState.SetTimelineDuration(_duration); UpdateLive(); },
+                    BuildControl = () =>
+                    {
+                        var f = new FloatField { value = _duration };
+                        f.RegisterValueChangedCallback(e =>
+                        {
+                            _duration = Mathf.Max(0.1f, e.newValue);
+                            VfxControlState.SetTimelineDuration(_duration);
+                            UpdateLive();
+                            RefreshPlaybackRows();
+                        });
+                        return (f, () => f.SetValueWithoutNotify(_duration));
+                    },
+                },
+                new PField
+                {
+                    Id = "seed", Label = "Start Seed",
+                    Tooltip = "Random seed for the simulation (VisualEffect.startSeed). Reseed randomizes it and reinitializes.",
+                    IsModified = () => _effect != null && (EffectsDiffer(ve => ve.startSeed) || _effect.startSeed != 0),
+                    Reset = () => SetStartSeed(0),
+                    BuildControl = BuildStartSeedControl,
+                },
+                new PField
+                {
+                    Id = "reseedOnPlay", Label = "Reseed on Play",
+                    Tooltip = "Pick a new random seed each time the effect (re)starts. VisualEffect.resetSeedOnPlay.",
+                    IsModified = () => _effect != null && (EffectsDiffer(ve => ve.resetSeedOnPlay) || _effect.resetSeedOnPlay != true),
+                    Reset = () => SetResetSeedOnPlay(true),
+                    BuildControl = () =>
+                    {
+                        var t = new Toggle { value = _effect != null && _effect.resetSeedOnPlay };
+                        t.showMixedValue = EffectsDiffer(ve => ve.resetSeedOnPlay);
+                        t.RegisterValueChangedCallback(e => { SetResetSeedOnPlay(e.newValue); RefreshPlaybackRows(); });
+                        return (t, () =>
+                        {
+                            if (_effect != null) t.SetValueWithoutNotify(_effect.resetSeedOnPlay);
+                            t.showMixedValue = EffectsDiffer(ve => ve.resetSeedOnPlay);
+                        });
+                    },
+                },
+                new PField
+                {
+                    Id = "event", Label = "Initial Event",
+                    Tooltip = "Event sent when the effect starts (VisualEffect.initialEventName); defaults to OnPlay.",
+                    IsModified = () => _effect != null && (EffectsDiffer(ve => InitEventOf(ve)) || InitEventOf(_effect) != "OnPlay"),
+                    Reset = () => SetInitialEvent("OnPlay"),
+                    BuildControl = () =>
+                    {
+                        var f = new TextField { value = _effect != null ? InitEventOf(_effect) : "OnPlay" };
+                        f.showMixedValue = EffectsDiffer(ve => InitEventOf(ve));
+                        f.RegisterValueChangedCallback(e => { SetInitialEvent(e.newValue); RefreshPlaybackRows(); });
+                        return (f, () =>
+                        {
+                            if (_effect != null) f.SetValueWithoutNotify(InitEventOf(_effect));
+                            f.showMixedValue = EffectsDiffer(ve => InitEventOf(ve));
+                        });
+                    },
+                },
+            };
+            return list;
+        }
+
+        // initialEventName is empty by default but behaves as "OnPlay"; normalize for display/compare.
+        static string InitEventOf(VisualEffect ve) => string.IsNullOrEmpty(ve.initialEventName) ? "OnPlay" : ve.initialEventName;
+
+        // Do the selected instances disagree on a value? (drives showMixedValue, like a multi-target SO.)
+        bool EffectsDiffer<T>(Func<VisualEffect, T> get)
+        {
+            if (_effect == null || _effects.Count <= 1) return false;
+            var first = get(_effect);
+            foreach (var ve in _effects)
+                if (ve != null && !EqualityComparer<T>.Default.Equals(get(ve), first)) return true;
+            return false;
+        }
 
         void BuildPlaybackTab(VisualElement body)
         {
@@ -825,87 +956,531 @@ namespace VfxControl.EditorTools
             BuildPlaybackContent(body);
         }
 
-        // The Playback content (Duration row + placeholders) without the favorites group — so the
-        // All tab can stack it under one unified favorites group instead of a second one.
+        // The Playback content without the favorites group, so the All tab can stack it under one
+        // unified favorites group. Two collapsible sections, both rail-filterable like the Renderer
+        // tab's Probes/Additional: "Playback options" (the setting rows) and "Send Event" (the
+        // event controls). The transport itself is NOT here — it lives once in the persistent top
+        // bar (with the scrub).
         void BuildPlaybackContent(VisualElement body)
         {
-            // Duration is the one Playback setting; default 10s. A first-class row: pinnable,
-            // resettable, modified when != default (so the Modified/★ chips + Reset tab include it).
-            bool chipOk = _filter == "all"
-                          || (_filter == "mod" && PlaybackModified())
-                          || (_filter == "fav" && IsFav(kDurationFavKey));
-            if (SearchMatches("Duration") && chipOk)
+            string section = CurrentSection();
+            bool InSection(string id) => section == "all" || section == id;
+
+            var fields = BuildPlaybackFields();
+            bool Show(PField f) => InSection("options") && SearchMatches(f.Label) && PlaybackChipOk(f);
+            int shown = AddPlaybackSection(body, "options", "Playback options", fields, Show);
+
+            // Send Event is an action section (favoritable but never "modified"): show it under
+            // "All"/its own rail section in the unfiltered view, or under the ★ filter when pinned.
+            // The Modified filter never includes it.
+            bool eventsChipOk = _filter == "all" || (_filter == "fav" && IsFav(kSendEventFavKey));
+            bool showEvents = _effect != null && InSection("events")
+                              && eventsChipOk && string.IsNullOrEmpty(_search.Trim());
+            if (showEvents) shown += AddSendEventSection(body);
+
+            if (shown == 0)
             {
-                body.Add(BuildDurationRow());
-                BuildPlaceholder(body, "More playback controls coming in the next pass.\nTransport, options, send-event.");
-            }
-            else if (_filter != "all")
-            {
-                BuildPlaceholder(body, _filter == "fav" ? "No favorite playback settings." : "No modified playback settings.");
-            }
-            else
-            {
-                BuildPlaceholder(body, $"No playback settings match “{_search}”.");
+                BuildPlaceholder(body,
+                    !string.IsNullOrEmpty(_search.Trim()) ? $"No playback settings match “{_search}”."
+                    : _filter == "fav" ? "No favorite playback settings."
+                    : _filter == "mod" ? "No modified playback settings."
+                    : "No playback settings available.");
             }
         }
+
+        // A collapsible "Playback options" group (styled like the renderer's section groups),
+        // containing the visible playback setting rows. Returns the number of rows shown.
+        int AddPlaybackSection(VisualElement host, string id, string title, List<PField> fields, Func<PField, bool> show)
+        {
+            var visible = fields.Where(show).ToList();
+            if (visible.Count == 0) return 0;
+
+            string key = "play:" + id;
+            bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
+            bool open = forceOpen || !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label(title);
+            titleLbl.AddToClassList("vfx-group-title");
+            header.Add(titleLbl);
+            var count = new Label(visible.Count.ToString());
+            count.AddToClassList("vfx-group-count");
+            header.Add(count);
+            if (!forceOpen)
+            {
+                header.tooltip = "Click to expand/collapse";
+                header.RegisterCallback<ClickEvent>(e =>
+                {
+                    if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                    _state.SaveCollapsed(_collapsed);
+                    RebuildBodyOnly();
+                });
+            }
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            foreach (var f in visible) content.Add(BuildPlaybackRow(f));
+            group.Add(content);
+            host.Add(group);
+            return visible.Count;
+        }
+
+        bool PlaybackChipOk(PField f) =>
+            _filter == "all" ||
+            (_filter == "fav" && IsFav(f.FavKey)) ||
+            (_filter == "mod" && f.IsModified());
 
         List<Setting> PlaybackFavoriteSettings()
         {
             var list = new List<Setting>();
-            if (IsFav(kDurationFavKey))
-                list.Add(new Setting { FavKey = kDurationFavKey, BuildRow = BuildDurationRow });
+            foreach (var f in BuildPlaybackFields())
+                if (IsFav(f.FavKey))
+                    list.Add(new Setting { FavKey = f.FavKey, BuildRow = () => BuildPlaybackRow(f) });
+            if (IsFav(kSendEventFavKey)) // the Send Event section pins as one unit
+                list.Add(new Setting { FavKey = kSendEventFavKey, BuildRow = BuildSendEventFavRow });
             return list;
         }
 
-        // The Duration row, styled like any property/renderer row (label · control · hover ↺/★).
-        // Duration is a tool pref (not a SerializedProperty), so edits sync the (possibly two)
-        // visible copies via RefreshDurationRows rather than binding.
-        VisualElement BuildDurationRow()
+        // (leaf, fav, mod) counts for the Playback tab's filter chips. The Send Event section
+        // counts as one extra leaf (favoritable, never "modified").
+        (int leaf, int fav, int mod) PlaybackChipCounts()
         {
+            var fields = BuildPlaybackFields();
+            int fav = fields.Count(f => IsFav(f.FavKey)) + (IsFav(kSendEventFavKey) ? 1 : 0);
+            return (fields.Count + 1, fav, fields.Count(f => f.IsModified()));
+        }
+
+        // A playback setting row, styled like any property/renderer row (label · control · hover ↺/★).
+        // These back live component props / tool prefs (not SerializedProperties), so edits sync the
+        // (possibly two) visible copies via RefreshPlaybackRows rather than binding.
+        VisualElement BuildPlaybackRow(PField f)
+        {
+            var (control, sync) = f.BuildControl();
+
             var row = MakeElement("vfx-row");
-            row.EnableInClassList("vfx-row--modified", PlaybackModified());
-            if (IsFav(kDurationFavKey)) row.AddToClassList("vfx-row--fav");
+            row.EnableInClassList("vfx-row--modified", f.IsModified());
+            if (IsFav(f.FavKey)) row.AddToClassList("vfx-row--fav");
 
             var labelCol = MakeElement("vfx-label-col");
-            var label = new Label("Duration (s)") { tooltip = "Length of the play/scrub timeline window before it loops." };
+            var label = new Label(f.Label) { tooltip = f.Tooltip ?? f.Label };
             label.AddToClassList("vfx-plabel");
             labelCol.Add(label);
             row.Add(labelCol);
 
             row.Add(MakeElement("vfx-row-lock")); // align with the other rows' lock gutter
 
-            var field = new FloatField { value = _duration };
-            field.AddToClassList("vfx-pcontrol");
-            field.RegisterValueChangedCallback(e =>
-            {
-                _duration = Mathf.Max(0.1f, e.newValue);
-                VfxControlState.SetTimelineDuration(_duration);
-                UpdateLive();
-                RefreshDurationRows();
-            });
-            AttachLabelDragger(label, field); // drag the label to scrub, like a native float field
-            row.Add(field);
+            control.AddToClassList("vfx-pcontrol");
+            AttachLabelDragger(label, control); // drag the label to scrub numeric fields (no-op otherwise)
+            row.Add(control);
 
             var tools = MakeElement("vfx-row-tools");
-            var reset = MakeIconButton("↺", "Reset to default", () => { ResetPlayback(); RefreshDurationRows(); });
+            var reset = MakeIconButton("↺", "Reset to default", () => { f.Reset(); RefreshPlaybackRows(); });
             reset.AddToClassList("vfx-tool-reset");
             tools.Add(reset);
-            var star = MakeIconButton(IsFav(kDurationFavKey) ? "★" : "☆", IsFav(kDurationFavKey) ? "Unpin" : "Pin", () => ToggleFav(kDurationFavKey));
+            var star = MakeIconButton(IsFav(f.FavKey) ? "★" : "☆", IsFav(f.FavKey) ? "Unpin" : "Pin", () => ToggleFav(f.FavKey));
             star.AddToClassList("vfx-tool-fav");
             tools.Add(star);
             row.Add(tools);
 
-            _durationRows.Add((row, field));
+            _playbackRows.Add((row, f, sync));
             return row;
         }
 
-        // Keep every visible Duration row (favorites copy + section copy) + chrome in sync.
-        void RefreshDurationRows()
+        // Start Seed: an int field (clamped ≥ 0 → uint, like the uint property control) plus an
+        // inline Reseed button that randomizes the seed and reinitializes the sim.
+        (VisualElement control, Action sync) BuildStartSeedControl()
         {
-            foreach (var (row, field) in _durationRows)
+            var wrap = MakeElement("vfx-seed-control");
+            var field = new IntegerField { value = _effect != null ? (int)_effect.startSeed : 0 };
+            field.AddToClassList("vfx-seed-int"); // marks it as the label-drag target (see AttachLabelDragger)
+            field.showMixedValue = EffectsDiffer(ve => ve.startSeed);
+            field.style.flexGrow = 1;
+            field.RegisterValueChangedCallback(e =>
             {
-                field.SetValueWithoutNotify(_duration);
-                row.EnableInClassList("vfx-row--modified", PlaybackModified());
+                SetStartSeed((uint)Mathf.Max(0, e.newValue));
+                RefreshPlaybackRows();
+            });
+            wrap.Add(field);
+
+            var reseed = MakeIconButton("⚄", "Reseed (randomize + reinitialize)", () => { Reseed(); RefreshPlaybackRows(); });
+            reseed.AddToClassList("vfx-seed-reseed");
+            wrap.Add(reseed);
+
+            return (wrap, () =>
+            {
+                if (_effect != null) field.SetValueWithoutNotify((int)_effect.startSeed);
+                field.showMixedValue = EffectsDiffer(ve => ve.startSeed);
+            });
+        }
+
+        // A transport button: either a built-in editor icon (iconName, optionally mirrored
+        // horizontally) or a text glyph.
+        Button MakeTransportButton(string tooltip, string iconName, Action onClick, string glyph = null, bool mirror = false)
+        {
+            var b = new Button(onClick) { tooltip = tooltip };
+            b.AddToClassList("vfx-tbtn");
+            if (!string.IsNullOrEmpty(iconName))
+            {
+                var img = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+                img.style.width = 16; img.style.height = 16;
+                img.image = EditorGUIUtility.IconContent(iconName).image;
+                if (mirror) img.style.scale = new Scale(new Vector3(-1f, 1f, 1f)); // flip to point the other way
+                b.Add(img);
+            }
+            else if (glyph != null)
+            {
+                b.text = glyph;
+            }
+            return b;
+        }
+
+        // Step one frame forward (simulate) or backward (reinit + resimulate — the GPU sim has no
+        // backward step; see the scrubbing caveat). Pauses, like the mini-transport step.
+        void StepFrame(int dir)
+        {
+            if (_effect == null) return;
+            const float dt = 1f / 60f;
+            if (dir > 0)
+            {
+                _effect.pause = true;
+                _effect.Simulate(dt, 1);
+                _scrubT = Mathf.Min(1f, _scrubT + dt / Mathf.Max(0.0001f, _duration));
+                UpdateLive();
+            }
+            else
+            {
+                SeekTo(_scrubT - dt / Mathf.Max(0.0001f, _duration));
+            }
+        }
+
+        // Favorite key for the whole Send Event section (it's an action surface, not a per-row
+        // setting, so it pins as one unit into the Favorites group).
+        const string kSendEventFavKey = "play:sendevent";
+
+        // "Send Event": a collapsible section group (same .vfx-group chrome as "Playback options"
+        // / the renderer sections), containing the quick-chips — OnPlay/OnStop + every custom Event
+        // block in the graph. Its header carries a ★ pin (favorite) like a row. Returns 1.
+        int AddSendEventSection(VisualElement host)
+        {
+            string key = "play:events";
+            bool open = !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label("Send Event");
+            titleLbl.AddToClassList("vfx-group-title");
+            header.Add(titleLbl);
+            // ★ pin: toggles the section's favorite (StopPropagation so it doesn't also collapse).
+            var star = MakeIconButton(IsFav(kSendEventFavKey) ? "★" : "☆",
+                IsFav(kSendEventFavKey) ? "Unpin from Favorites" : "Pin to Favorites", () => ToggleFav(kSendEventFavKey));
+            star.AddToClassList("vfx-group-pin");
+            star.EnableInClassList("vfx-group-pin--on", IsFav(kSendEventFavKey));
+            star.RegisterCallback<ClickEvent>(e => e.StopPropagation());
+            header.Add(star);
+            header.tooltip = "Click to expand/collapse";
+            header.RegisterCallback<ClickEvent>(e =>
+            {
+                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                _state.SaveCollapsed(_collapsed);
+                RebuildBodyOnly();
+            });
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            content.Add(BuildEventPayloadEditor());
+            content.Add(BuildEventChips());
+            group.Add(content);
+
+            host.Add(group);
+            return 1;
+        }
+
+        // Event-payload editor: a list of named/typed attributes (name · type · value · remove)
+        // plus an "+ Attribute" dropdown (the same Standard/Advanced/Custom presets the package's
+        // VFX Event Tester offers). The attributes are attached to whatever event a chip sends
+        // (via VFXEventAttribute). Editing a value mutates the model in place; add/remove/type
+        // changes rebuild the body.
+        VisualElement BuildEventPayloadEditor()
+        {
+            var box = MakeElement("vfx-payload");
+
+            var head = MakeElement("vfx-payload-head");
+            var headLabel = new Label("Event Attributes");
+            headLabel.AddToClassList("vfx-payload-title");
+            head.Add(headLabel);
+            var add = new Button(ShowAddAttributeMenu) { text = "+ Attribute", tooltip = "Add an event attribute to the payload" };
+            add.AddToClassList("vfx-payload-add");
+            head.Add(add);
+            box.Add(head);
+
+            foreach (var a in _eventPayload)
+                box.Add(BuildPayloadRow(a));
+
+            return box;
+        }
+
+        VisualElement BuildPayloadRow(EventAttr a)
+        {
+            var row = MakeElement("vfx-payload-row");
+
+            var nameField = new TextField { value = a.Name };
+            nameField.AddToClassList("vfx-payload-name");
+            nameField.RegisterValueChangedCallback(e => a.Name = e.newValue);
+            row.Add(nameField);
+
+            var typeField = new EnumField(a.Type);
+            typeField.AddToClassList("vfx-payload-type");
+            typeField.RegisterValueChangedCallback(e =>
+            {
+                a.Type = (EventAttrType)e.newValue;
+                a.Value = DefaultAttrValue(a.Type); // value control type changes → rebuild the body
+                RebuildBodyOnly();
+            });
+            row.Add(typeField);
+
+            var value = BuildAttrValueControl(a);
+            value.AddToClassList("vfx-payload-value");
+            row.Add(value);
+
+            var remove = MakeIconButton("✕", "Remove attribute", () => { _eventPayload.Remove(a); RebuildBodyOnly(); });
+            remove.AddToClassList("vfx-payload-remove");
+            row.Add(remove);
+
+            return row;
+        }
+
+        // The value editor for one attribute, bound to a.Value (in-place; no rebuild on edit).
+        VisualElement BuildAttrValueControl(EventAttr a)
+        {
+            switch (a.Type)
+            {
+                case EventAttrType.Bool:
+                {
+                    var f = new Toggle { value = a.Value is bool b && b };
+                    f.RegisterValueChangedCallback(e => a.Value = e.newValue);
+                    return f;
+                }
+                case EventAttrType.Vector2:
+                {
+                    var f = new Vector2Field { value = a.Value is Vector2 v ? v : Vector2.zero };
+                    f.RegisterValueChangedCallback(e => a.Value = e.newValue);
+                    return f;
+                }
+                case EventAttrType.Vector3:
+                {
+                    var f = new Vector3Field { value = a.Value is Vector3 v ? v : Vector3.zero };
+                    f.RegisterValueChangedCallback(e => a.Value = e.newValue);
+                    return f;
+                }
+                case EventAttrType.Color:
+                {
+                    var f = new ColorField { value = a.Value is Color c ? c : Color.white, hdr = true };
+                    f.RegisterValueChangedCallback(e => a.Value = e.newValue);
+                    return f;
+                }
+                default: // Float
+                {
+                    var f = new FloatField { value = a.Value is float fl ? fl : 0f };
+                    f.RegisterValueChangedCallback(e => a.Value = e.newValue);
+                    return f;
+                }
+            }
+        }
+
+        static object DefaultAttrValue(EventAttrType t)
+        {
+            switch (t)
+            {
+                case EventAttrType.Bool: return true;
+                case EventAttrType.Vector2: return Vector2.zero;
+                case EventAttrType.Vector3: return Vector3.zero;
+                case EventAttrType.Color: return Color.white;
+                default: return 0f;
+            }
+        }
+
+        // The "+ Attribute" dropdown — the Standard/Advanced/Custom presets from the package's
+        // VFX Event Tester (name + implied type), plus a plain Custom set.
+        void ShowAddAttributeMenu()
+        {
+            var menu = new GenericMenu();
+            void Item(string path, string attrName, EventAttrType type) =>
+                menu.AddItem(new GUIContent(path), false, () =>
+                {
+                    _eventPayload.Add(new EventAttr { Name = attrName, Type = type, Value = DefaultAttrValue(type) });
+                    RebuildBodyOnly();
+                });
+
+            Item("Standard/Position", "position", EventAttrType.Vector3);
+            Item("Standard/Velocity", "velocity", EventAttrType.Vector3);
+            Item("Standard/Size", "size", EventAttrType.Float);
+            Item("Standard/Mass", "mass", EventAttrType.Float);
+            Item("Standard/Color", "color", EventAttrType.Color);
+            Item("Standard/Alpha", "alpha", EventAttrType.Float);
+            Item("Standard/Age", "age", EventAttrType.Float);
+            Item("Standard/Lifetime", "lifetime", EventAttrType.Float);
+            Item("Standard/Alive", "alive", EventAttrType.Bool);
+            Item("Standard/Scale.X", "scaleX", EventAttrType.Float);
+            Item("Standard/Scale.Y", "scaleY", EventAttrType.Float);
+            Item("Standard/Scale.Z", "scaleZ", EventAttrType.Float);
+            Item("Standard/Angle.X", "angleX", EventAttrType.Float);
+            Item("Standard/Angle.Y", "angleY", EventAttrType.Float);
+            Item("Standard/Angle.Z", "angleZ", EventAttrType.Float);
+            Item("Advanced/OldPosition", "oldPosition", EventAttrType.Vector3);
+            Item("Advanced/TargetPosition", "targetPosition", EventAttrType.Vector3);
+            Item("Advanced/Direction", "direction", EventAttrType.Vector3);
+            Item("Advanced/AngularVelocity.X", "angularVelocityX", EventAttrType.Float);
+            Item("Advanced/AngularVelocity.Y", "angularVelocityY", EventAttrType.Float);
+            Item("Advanced/AngularVelocity.Z", "angularVelocityZ", EventAttrType.Float);
+            Item("Custom/Custom Bool", "customBool", EventAttrType.Bool);
+            Item("Custom/Custom Float", "customFloat", EventAttrType.Float);
+            Item("Custom/Custom Vector2", "customVector2", EventAttrType.Vector2);
+            Item("Custom/Custom Vector3", "customVector3", EventAttrType.Vector3);
+            Item("Custom/Custom Color", "customColor", EventAttrType.Color);
+
+            menu.ShowAsContext();
+        }
+
+        // The left-aligned, wrapping row of event chips: the built-in OnPlay/OnStop plus every
+        // custom Event block (VFXBasicEvent.eventName) declared in the graph (via VfxGraphReflection).
+        // Clicking a chip SendEvents it to every selected instance.
+        VisualElement BuildEventChips()
+        {
+            var chips = MakeElement("vfx-sendevent-chips");
+            foreach (var n in EventChipNames())
+            {
+                // icon + label as child elements (a Button's intrinsic `text` isn't a flex item,
+                // so it would overlap a leading glyph — see the conventions note).
+                var name = n;
+                var chip = new Button(() => SendEventToAll(name)) { tooltip = $"Send “{name}” to the selected effect(s)" };
+                chip.AddToClassList("vfx-sendevent-chip");
+                var bolt = new Label("⚡") { pickingMode = PickingMode.Ignore }; // ⚡ event bolt
+                bolt.AddToClassList("vfx-sendevent-bolt");
+                chip.Add(bolt);
+                chip.Add(new Label(name) { pickingMode = PickingMode.Ignore });
+                chips.Add(chip);
+            }
+            return chips;
+        }
+
+        // The Send Event section as a Favorites-group entry: a labelled chips row.
+        VisualElement BuildSendEventFavRow()
+        {
+            var row = MakeElement("vfx-row");
+            var labelCol = MakeElement("vfx-label-col");
+            var label = new Label("Send Event") { tooltip = "Send a graph event to the selected effect(s)." };
+            label.AddToClassList("vfx-plabel");
+            labelCol.Add(label);
+            row.Add(labelCol);
+            row.Add(MakeElement("vfx-row-lock"));
+            var chips = BuildEventChips();
+            chips.AddToClassList("vfx-pcontrol");
+            row.Add(chips);
+            return row;
+        }
+
+        // The Send-Event chips: the built-in OnPlay/OnStop, then every custom Event block declared
+        // in the graph (VFXBasicEvent.eventName), distinct and in graph order.
+        List<string> EventChipNames()
+        {
+            var names = new List<string> { VisualEffectAsset.PlayEventName, VisualEffectAsset.StopEventName };
+            var asset = _effect != null ? _effect.visualEffectAsset : null;
+            foreach (var e in VfxGraphReflection.GetEventNames(asset))
+                if (!names.Contains(e)) names.Add(e);
+            return names;
+        }
+
+        // Send an event to every selected instance, attaching the payload attributes (if any) via
+        // a per-instance VFXEventAttribute. OnPlay/OnStop route through Play()/Stop() like the
+        // package's Event Tester so the attributes reach the right system.
+        void SendEventToAll(string eventName)
+        {
+            if (string.IsNullOrEmpty(eventName)) return;
+            foreach (var ve in _effects)
+            {
+                if (ve == null) continue;
+
+                VFXEventAttribute attrib = _eventPayload.Count > 0 ? ve.CreateVFXEventAttribute() : null;
+                if (attrib != null)
+                {
+                    foreach (var a in _eventPayload)
+                    {
+                        if (string.IsNullOrEmpty(a.Name)) continue;
+                        switch (a.Type)
+                        {
+                            case EventAttrType.Bool:    attrib.SetBool(a.Name, a.Value is bool b && b); break;
+                            case EventAttrType.Float:   attrib.SetFloat(a.Name, a.Value is float f ? f : 0f); break;
+                            case EventAttrType.Vector2: attrib.SetVector2(a.Name, a.Value is Vector2 v2 ? v2 : Vector2.zero); break;
+                            case EventAttrType.Vector3: attrib.SetVector3(a.Name, a.Value is Vector3 v3 ? v3 : Vector3.zero); break;
+                            case EventAttrType.Color:   attrib.SetVector4(a.Name, a.Value is Color c ? (Vector4)c : Vector4.zero); break;
+                        }
+                    }
+                }
+
+                if (attrib == null) ve.SendEvent(eventName);
+                else if (eventName == VisualEffectAsset.PlayEventName) ve.Play(attrib);
+                else if (eventName == VisualEffectAsset.StopEventName) ve.Stop(attrib);
+                else ve.SendEvent(eventName, attrib);
+            }
+            UpdateLive();
+        }
+
+        // ---- playback property setters (write to every selected instance, undo-tracked) ----
+
+        void SetPlayRate(float v)
+        {
+            v = Mathf.Max(0f, v);
+            Undo.RecordObjects(_effects.ToArray(), "Set Play Rate");
+            foreach (var ve in _effects) if (ve != null) { ve.playRate = v; EditorUtility.SetDirty(ve); }
+        }
+
+        void SetStartSeed(uint v)
+        {
+            Undo.RecordObjects(_effects.ToArray(), "Set Start Seed");
+            foreach (var ve in _effects) if (ve != null) { ve.startSeed = v; EditorUtility.SetDirty(ve); }
+        }
+
+        void SetResetSeedOnPlay(bool v)
+        {
+            Undo.RecordObjects(_effects.ToArray(), "Set Reset Seed On Play");
+            foreach (var ve in _effects) if (ve != null) { ve.resetSeedOnPlay = v; EditorUtility.SetDirty(ve); }
+        }
+
+        void SetInitialEvent(string v)
+        {
+            Undo.RecordObjects(_effects.ToArray(), "Set Initial Event");
+            foreach (var ve in _effects) if (ve != null) { ve.initialEventName = v; EditorUtility.SetDirty(ve); }
+        }
+
+        // Randomize the seed on every instance and reinitialize so it takes effect immediately.
+        void Reseed()
+        {
+            Undo.RecordObjects(_effects.ToArray(), "Reseed VFX");
+            foreach (var ve in _effects)
+                if (ve != null)
+                {
+                    ve.startSeed = (uint)UnityEngine.Random.Range(1, int.MaxValue);
+                    ve.Reinit();
+                    EditorUtility.SetDirty(ve);
+                }
+        }
+
+        // Keep every visible playback row (favorites copy + section copy) + chrome in sync.
+        void RefreshPlaybackRows()
+        {
+            foreach (var (row, f, sync) in _playbackRows)
+            {
+                sync();
+                row.EnableInClassList("vfx-row--modified", f.IsModified());
             }
             PopulateChips();
             UpdateFooter();
@@ -987,8 +1562,16 @@ namespace VfxControl.EditorTools
 
         // Rows built this populate, so a value/undo change can re-evaluate the modified marker.
         List<(VisualElement row, RField field)> _rendererRows;
-        // Duration rows built this populate (favorites copy + section copy), kept in sync on edit.
-        readonly List<(VisualElement row, FloatField field)> _durationRows = new List<(VisualElement, FloatField)>();
+        // Playback rows built this populate (favorites copy + section copy), kept in sync on edit
+        // via each field's `sync` action (they back live props, not SerializedProperties).
+        readonly List<(VisualElement row, PField field, Action sync)> _playbackRows = new List<(VisualElement, PField, Action)>();
+
+        // Event payload (Send Event section): a list of named/typed attributes attached to the
+        // event via VFXEventAttribute (mirrors the package's VFX Event Tester overlay). Lives for
+        // the window session; survives body rebuilds (not a per-populate list).
+        enum EventAttrType { Bool, Float, Vector2, Vector3, Color }
+        sealed class EventAttr { public string Name; public EventAttrType Type; public object Value; }
+        readonly List<EventAttr> _eventPayload = new List<EventAttr>();
 
         // One renderer setting: rail section, label, favorite key, availability (SRP /
         // current-value gates), modified-vs-default test, reset, and a UIToolkit control
@@ -1969,6 +2552,17 @@ namespace VfxControl.EditorTools
                     new FieldMouseDragger<int>(i).SetDragZone(label);
                     label.AddToClassList("vfx-plabel--drag");
                     break;
+                default:
+                    // composite controls that still want label-drag opt in by class (e.g. the
+                    // Start Seed wrap = int field + reseed button) — scoped so vector/color
+                    // composites keep their own affordances and don't get hijacked.
+                    var seedInt = control.Q<IntegerField>(className: "vfx-seed-int");
+                    if (seedInt != null)
+                    {
+                        new FieldMouseDragger<int>(seedInt).SetDragZone(label);
+                        label.AddToClassList("vfx-plabel--drag");
+                    }
+                    break;
             }
         }
 
@@ -2265,7 +2859,7 @@ namespace VfxControl.EditorTools
 
         // The play/scrub timeline window default (the value a freshly-set-up tool uses).
         const float kDefaultDuration = 10f;
-        bool PlaybackModified() => !Mathf.Approximately(_duration, kDefaultDuration);
+        bool PlaybackModified() => PlaybackChipCounts().mod > 0;
 
         // Modified count for the active tab — drives the footer note + Reset button enabled state.
         int ActiveTabModifiedCount()
@@ -2274,8 +2868,8 @@ namespace VfxControl.EditorTools
             {
                 case "props": return VfxPropertySheet.CountModified(_so, _params);
                 case "render": return RendererChipCounts().mod;
-                case "play": return PlaybackModified() ? 1 : 0;
-                case "all": return VfxPropertySheet.CountModified(_so, _params) + RendererChipCounts().mod + (PlaybackModified() ? 1 : 0);
+                case "play": return PlaybackChipCounts().mod;
+                case "all": return VfxPropertySheet.CountModified(_so, _params) + RendererChipCounts().mod + PlaybackChipCounts().mod;
                 default: return 0; // debug has no resettable settings yet
             }
         }
@@ -2302,9 +2896,8 @@ namespace VfxControl.EditorTools
 
         void ResetPlayback()
         {
-            _duration = kDefaultDuration;
-            VfxControlState.SetTimelineDuration(_duration);
-            UpdateLive();
+            foreach (var f in BuildPlaybackFields())
+                if (f.IsModified()) f.Reset();
         }
 
         void UpdateFooter()
@@ -2350,8 +2943,8 @@ namespace VfxControl.EditorTools
             if (changed) { _favorites = migrated; _state.SaveFavorites(_favorites); }
         }
 
-        // ~30fps clock: advances the scrub bar in real time while playing, looping
-        // (and resetting the sim) at the end of the configured window.
+        // ~30fps clock: advances the scrub bar in real time while playing. At the end of the
+        // window it loops (reset the sim) or — if Loop is off — stops on the last frame.
         void Tick()
         {
             double now = EditorApplication.timeSinceStartup;
@@ -2364,8 +2957,8 @@ namespace VfxControl.EditorTools
                 _scrubT += dt * rate / _duration;
                 if (_scrubT >= 1f)
                 {
-                    _scrubT = 0f;
-                    _effect.Reinit(); // reset playback at the end of the window
+                    if (_loop) { _scrubT = 0f; _effect.Reinit(); } // restart at the end of the window
+                    else { _scrubT = 1f; _effect.pause = true; }   // hold on the last frame
                 }
             }
 
@@ -2386,6 +2979,10 @@ namespace VfxControl.EditorTools
                 _playIcon.image = EditorGUIUtility.IconContent(_effect.pause ? "PlayButton" : "PauseButton").image;
                 _playBtn.tooltip = _effect.pause ? "Play" : "Pause";
             }
+            // keep the Play Rate slider reflecting external changes (undo, multi-select); only
+            // correct when out of sync so an in-progress drag isn't disturbed.
+            if (_rateSlider != null && !Mathf.Approximately(_rateSlider.value, _effect.playRate))
+                _rateSlider.SetValueWithoutNotify(_effect.playRate);
         }
 
         void BuildPlaceholder(VisualElement body, string msg)

@@ -13,6 +13,7 @@
 // com.unity.visualeffectgraph.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -63,6 +64,11 @@ namespace VfxControl.EditorTools
                          s_fMin, s_fMax, s_fEnumValues, s_fDescendantCount, s_fDefaultValue,
                          s_fSpace, s_fSpaceable;
         static MethodInfo s_SerializableGet; // object VFXSerializableObject.Get()
+
+        // Event-block enumeration: VFXBasicEvent.eventName + VFXGraph.children.
+        static Type s_BasicEventType;          // UnityEditor.VFX.VFXBasicEvent (a VFXContext)
+        static FieldInfo s_fEventName;         // public string VFXBasicEvent.eventName
+        static PropertyInfo s_ChildrenProp;    // IEnumerable<VFXModel> VFXModel.children
 
         /// When true, GetExposedParameters logs each resolution/enumeration step.
         internal static bool Verbose;
@@ -148,6 +154,14 @@ namespace VfxControl.EditorTools
                     // VFXSerializableObject has both Get() and Get<T>(); avoid the
                     // ambiguous GetMethod overload and take the non-generic one.
                     s_SerializableGet = FindParameterless(serializableType, "Get", any);
+
+                // Event blocks: VFXBasicEvent.eventName, reachable via the graph's children
+                // (mirrors VFXComponentBoard.RecurseGetEventNames). Optional — degrades to no
+                // graph events if absent. `children` is a `new`-hidden property, so pick by name.
+                s_BasicEventType = asm.GetType("UnityEditor.VFX.VFXBasicEvent");
+                s_fEventName = s_BasicEventType?.GetField("eventName", any);
+                s_ChildrenProp = graphType.GetProperties(any)
+                    .FirstOrDefault(p => p.Name == "children" && p.GetIndexParameters().Length == 0);
 
                 s_Available = s_GetResource != null && s_GetOrCreateGraph != null &&
                               s_ParameterInfoField != null && s_fSheetType != null &&
@@ -301,6 +315,44 @@ namespace VfxControl.EditorTools
             {
                 Debug.LogWarning($"[VFX Control] Failed to read exposed properties: {e.Message}");
                 result.Clear();
+            }
+
+            return result;
+        }
+
+        /// The custom event names declared by Event blocks (VFXBasicEvent) in the asset's graph,
+        /// in graph order, distinct. Does NOT include the built-in OnPlay/OnStop (the caller adds
+        /// those) and does NOT recurse subgraphs yet. Empty if the asset is null or unreachable.
+        public static List<string> GetEventNames(VisualEffectAsset asset)
+        {
+            var result = new List<string>();
+            if (asset == null) return result;
+
+            Resolve();
+            if (!s_Available || s_BasicEventType == null || s_fEventName == null || s_ChildrenProp == null)
+                return result;
+
+            try
+            {
+                var resource = s_GetResource.Invoke(null, new object[] { asset });
+                if (resource == null) return result;
+                var graph = s_GetOrCreateGraph.Invoke(null, new[] { resource });
+                if (graph == null) return result;
+
+                if (s_ChildrenProp.GetValue(graph) is IEnumerable children)
+                {
+                    foreach (var child in children)
+                    {
+                        if (child == null || !s_BasicEventType.IsInstanceOfType(child)) continue;
+                        var name = s_fEventName.GetValue(child) as string;
+                        if (!string.IsNullOrEmpty(name) && !result.Contains(name))
+                            result.Add(name);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read event names: {e.Message}");
             }
 
             return result;

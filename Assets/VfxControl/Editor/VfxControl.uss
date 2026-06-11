@@ -58,11 +58,35 @@
 }
 
 /* ---- mini transport (persistent) ---- */
-.vfx-sticky-transport {
+/* column wrapper: row 1 = scrub + time + live; row 2 = transport buttons + Rate. */
+.vfx-transport-wrap {
+    flex-direction: column;
+    background-color: var(--unity-colors-default-background);
+    padding: 3px 0;
+}
+.vfx-transport-row {
     flex-direction: row;
     align-items: center;
-    padding: 4px 8px;
-    background-color: var(--unity-colors-default-background);
+    padding: 2px 8px;
+}
+
+/* Rate slider: sits right after the transport buttons on row 2, filling the rest of the row. */
+.vfx-rate-label {
+    flex-shrink: 0;
+    margin-left: 8px;
+    margin-right: 6px;
+    font-size: 11px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-rate-slider {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin: 0;
+}
+.vfx-rate-reset {
+    flex-shrink: 0;
+    margin-left: 2px;
 }
 
 .vfx-tbtn {
@@ -277,6 +301,19 @@
     -unity-text-align: middle-center;
     color: rgb(230, 184, 64); /* gold star, in the category-dot slot */
     flex-shrink: 0;
+}
+
+/* ★ pin on a section header (e.g. Send Event): dim until pinned/hovered, gold when pinned. */
+.vfx-group-pin {
+    flex-shrink: 0;
+    opacity: 0.4;
+}
+.vfx-group-header:hover .vfx-group-pin {
+    opacity: 0.8;
+}
+.vfx-group-pin--on {
+    opacity: 1;
+    color: rgb(230, 184, 64);
 }
 
 /* ---- category groups (custom collapsible) ---- */
@@ -620,7 +657,7 @@
 .vfx-allsection-head {
     flex-direction: row;
     align-items: center;
-    margin: 18px 8px 4px 8px;
+    margin: 12px 8px 4px 8px;
     padding-bottom: 5px;
     border-bottom-width: 1px;
     border-bottom-color: var(--unity-colors-default-border);
@@ -634,8 +671,103 @@
 }
 .vfx-allsection-title {
     -unity-font-style: bold;
-    font-size: 13px;
+    font-size: 12px;
     letter-spacing: 1px;
     flex-grow: 1;
     color: var(--unity-colors-default-text);
+}
+
+/* ---- Playback tab ---- */
+
+/* Loop toggle "engaged" state (the loop button lives in the persistent top transport bar). */
+.vfx-tbtn--on {
+    background-color: var(--unity-colors-highlight-background);
+    border-color: var(--unity-colors-highlight-background);
+}
+
+/* Start Seed: int field + inline reseed (⚄) button. */
+.vfx-seed-control {
+    flex-grow: 1;
+    flex-direction: row;
+    align-items: center;
+    min-width: 0;
+}
+.vfx-seed-reseed {
+    flex-grow: 0;
+    flex-shrink: 0;
+    width: 22px;
+    margin-left: 3px;
+}
+
+/* Event payload editor (Send Event section): attribute list + "+ Attribute" dropdown. */
+.vfx-payload {
+    margin-bottom: 4px;
+}
+.vfx-payload-head {
+    flex-direction: row;
+    align-items: center;
+    margin: 2px 2px 3px 2px;
+}
+.vfx-payload-title {
+    flex-grow: 1;
+    font-size: 11px;
+    opacity: 0.7;
+}
+.vfx-payload-add {
+    flex-shrink: 0;
+    height: 18px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+.vfx-payload-row {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 2px;
+}
+.vfx-payload-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin: 0 2px 0 0;
+}
+.vfx-payload-type {
+    flex-shrink: 0;
+    width: 64px;
+    margin: 0 2px 0 0;
+}
+.vfx-payload-value {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin: 0;
+}
+.vfx-payload-remove {
+    flex-shrink: 0;
+    margin-left: 1px;
+}
+
+/* Send Event section: the wrapping row of event chips (see AddSendEventSection / BuildEventChips). */
+.vfx-sendevent-chips {
+    flex-direction: row;
+    flex-wrap: wrap;        /* wrap when a graph declares many events */
+    align-items: center;
+    padding: 2px 2px 4px 2px;
+}
+.vfx-sendevent-chip {
+    flex-grow: 0;       /* natural width — don't stretch under the .vfx-pcontrol > * rule */
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    height: 22px;
+    margin-right: 5px;
+    margin-bottom: 3px;  /* spacing when chips wrap to a second line */
+    padding: 0 10px 0 8px;
+    font-size: 12px;
+    border-radius: 3px;  /* squared with a slight rounding (was a 9px pill) */
+}
+/* leading ⚡ bolt before the event name */
+.vfx-sendevent-bolt {
+    margin-right: 4px;
+    font-size: 13px;
+    color: rgb(255, 112, 20);  /* orange (less yellow) */
 }

@@ -19,7 +19,8 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   (search/chips/rail/groups/struct cards/rows), Renderer tab (sibling VFXRenderer settings), footer,
   copy-paste, scene-view gizmos, multi-edit.
 - **`VfxGraphReflection.cs`** — reflection bridge to the editor-internal VFX graph;
-  `GetExposedParameters(asset)` → `List<VfxExposedParam>`.
+  `GetExposedParameters(asset)` → `List<VfxExposedParam>`, and `GetEventNames(asset)` →
+  custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
   `SerializedObject` (undo/prefab/multi-edit safe).
 - **`VfxControlState.cs`** — persistence: favorites/collapsed/constrained per asset GUID
@@ -63,6 +64,11 @@ and degrades gracefully (empty list / no-op) if a member shifts.
 - **Space**: `VFXSpace` (`None`/`Local`/`World`; serialized `-1` = None). Spaceable
   space icons ship at `Packages/com.unity.visualeffectgraph/Editor/UIResources/VFX/`
   (`WorldSpace`/`LocalSpace`/`NoneSpace`, with `d_` dark + `@2x` HiDPI variants).
+- **Event names**: custom events are `VFXBasicEvent` contexts in the graph — `eventName`
+  (public string, default `OnPlay`). Enumerate by iterating `VFXGraph.children` (the `new`-hidden
+  `VFXModel.children` property) and filtering to `VFXBasicEvent`; the built-in defaults are
+  `VisualEffectAsset.PlayEventName`/`StopEventName` (= `OnPlay`/`OnStop`). The Component Board's
+  `RecurseGetEventNames` also recurses `VFXSubgraphContext.subChildren` — we don't yet.
 
 ## VfxExposedParam model
 
@@ -73,7 +79,7 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
 
 ## UI structure & rendering
 
-- **Header** → **Asset/Initial Event** rows → **mini-transport** → recessed divider →
+- **Header** → **Asset** row (Initial Event moved to the Playback tab) → **mini-transport** → recessed divider →
   **chrome** (search + filter chips, shared across tabs) → **tabs** (All/Properties/
   Playback/Debug/Renderer) → **section rail** (per-tab) → body → **footer**
   (`{n} edited · seed {n}` + Reset all). The window is **selection-driven** like an
@@ -89,7 +95,7 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   which repopulates only tabs+chips+rail+body. **Search filters the active tab only**
   (`SearchMatches` for IMGUI/meta fields, `Visible` for properties). The **section rail**
   generalizes the old category rail: Properties→categories, Renderer→Probes/Additional,
-  Playback/Debug→just "All" for now; selection is **per-tab** in `_sections` (packed into
+  Playback→"Playback options"/"Send Event", Debug→just "All" for now; selection is **per-tab** in `_sections` (packed into
   `VfxControlState.Sections`, migrating the legacy `Category`). `CurrentSection()` returns
   "all" for tabs without a rail. The **All tab** (default) is a traditional inspector:
   Properties+Renderer+Playback stacked with no rail (`BuildAllTab`), each under a **collapsible**
@@ -228,11 +234,59 @@ Sphere/Circle/Torus variants work with no extra code).
   `_rendererRows`/`TrackSerializedObjectValue` so markers stay live.
 - **Playback**: configurable timeline **duration** (default 10s, editable in the Playback
   tab, stored globally in `EditorPrefs`). A ~30fps `Tick` advances the scrub bar by real
-  `dt × playRate / duration` while playing and loops (`Reinit` at the end). Mini-transport:
-  play/pause (`pause`, built-in `PlayButton`/`PauseButton` icons via an `Image` for crisp
-  rendering), step (`Simulate(1/60,1)`), restart (`Reinit`). The blue fill is updated in
-  `UpdateLive` (so it also resets on restart-while-paused). Time readout = scrub × duration
-  (NOT real sim time — GPU sim has no queryable playhead; see handoff scrub caveat).
+  `dt × playRate / duration` while playing; at the end it loops (`Reinit`) or — if the
+  **Loop** toggle is off (`_loop`, `EditorPrefs`) — holds on the last frame. The persistent
+  top transport bar (`BuildMiniTransport`, always visible above the tabs) is the **single home
+  for the transport**, laid out as a `.vfx-transport-wrap` **column of two `.vfx-transport-row`s**:
+  **row 1** = the full-width scrub bar + time + live count; **row 2** = the transport buttons —
+  restart (`Reinit`) · step-back · play/pause (`pause`, built-in `PlayButton`/`PauseButton`
+  icons via an `Image` for crisp rendering) · step-forward (`Simulate(1/60,1)`) · **Loop**
+  toggle (`_loopBtn`, `.vfx-tbtn--on`) — followed by the **Rate** slider ("Rate" label · 0–10×
+  `Slider` filling the rest of the row · ↺ reset-to-1×; `_rateSlider` is a window-level ref
+  resynced by `UpdateLive` so undo/multi-select stay reflected). The Playback tab does NOT
+  duplicate any of this; buttons built via `MakeTransportButton`/`StepFrame`. **Step-back reuses
+  the `StepButton` icon mirrored** (`MakeTransportButton(mirror:true)` → `style.scale = -1 x`);
+  a dedicated glyph read poorly. The blue fill is updated in `UpdateLive` (so it also resets on
+  restart-while-paused). Time readout = scrub × duration (NOT real sim time — GPU sim has no
+  queryable playhead; see handoff scrub caveat). Scrub + step-back seek via **`SeekTo`** (pause
+  → `Reinit` → `Simulate` forward to target).
+- **Playback tab** (built out): settings are **`PField`** descriptors (`BuildPlaybackFields`),
+  modelled like the renderer's `RField` but backed by live component props / tool prefs
+  (NOT `SerializedProperty`s) — each has a fav key (`play:<id>`), `IsModified`, `Reset`, and a
+  `BuildControl()` returning the control **+ a `sync` action** (re-reads the value into it).
+  **Duration** (tool pref), **Start Seed** (`startSeed`, int→uint + inline ⚄ **Reseed** =
+  randomize + `Reinit`; its int field is class `vfx-seed-int` so `AttachLabelDragger` makes the
+  row label drag-scrub it like a plain int), **Reseed on Play** (`resetSeedOnPlay`), **Initial
+  Event** (`initialEventName` — the sole home for it now). (Rate is NOT a `PField` — it lives in
+  the transport strip, see Playback above.) All write
+  to every selected instance with `Undo.RecordObjects` + `SetDirty`; `showMixedValue` via
+  `EffectsDiffer`. Each is a property-style row (`BuildPlaybackRow`, hover ↺/★) filtered by
+  search + chips (`PlaybackChipOk`/`PlaybackChipCounts`); the favorites group + section copies
+  stay in sync via **`RefreshPlaybackRows`** (calls each row's `sync`), like the old
+  `RefreshDurationRows`. The rows live in a collapsible **"Playback options"** section group
+  (`AddPlaybackSection`, collapse key `play:options`). The events get their own **"Send Event"**
+  section (`AddSendEventSection`, collapse key `play:events`), rendered with the **same
+  `.vfx-group` chrome** — just a left-aligned, wrapping row of **quick-chips** (`BuildEventChips`:
+  squared `border-radius:3px` buttons, each a leading orange ⚡ bolt Label + the event name; no
+  manual text field — the graph is the source of truth). The chips are **OnPlay/OnStop**
+  (`VisualEffectAsset.Play/StopEventName`) plus **every custom Event block in the graph** —
+  `VfxGraphReflection.GetEventNames` walks `VFXGraph.children` for `VFXBasicEvent` and reads its
+  public `eventName` (mirrors `VFXComponentBoard.RecurseGetEventNames`; top-level only, no
+  subgraph recursion yet). Above the chips, an **event-payload editor** (`BuildEventPayloadEditor`)
+  mirrors the package's **VFX Event Tester overlay** (`VFXEventTesterWindow`): a list of named/typed
+  attributes (`_eventPayload` of `EventAttr` {name, type ∈ Bool/Float/Vector2/Vector3/Color, value})
+  with name · type · value · ✕ rows and a **"+ Attribute"** `GenericMenu` of the Standard/Advanced/
+  Custom presets. Clicking a chip sends with the payload: a per-instance `VFXEventAttribute`
+  (`CreateVFXEventAttribute` + `SetBool/Float/Vector2/Vector3/Vector4`), then `Play(attrib)` /
+  `Stop(attrib)` for OnPlay/OnStop else `SendEvent(name, attrib)` — all **public runtime API, no
+  reflection**. The payload is window-session state (survives body rebuilds; value edits mutate in
+  place, add/remove/type changes `RebuildBodyOnly`). The section header
+  carries a **★ pin** (`vfx-group-pin`, fav key `play:sendevent`) — favoriting the whole section
+  surfaces it in the **Favorites group** as a labelled chips row (`BuildSendEventFavRow`); it
+  counts as one extra leaf in `PlaybackChipCounts` (favoritable, never "modified"), and shows
+  under the ★ filter when pinned. Both sections are `PlaybackSections` rail entries,
+  rail-filterable like the Renderer tab's Probes/Additional. The transport itself is NOT in the
+  tab — it lives once in the persistent top bar (see Playback above).
 - **Multi-instance edit**: select several scene VFX sharing the asset → `_effects` + one
   `SerializedObject` each (`_sos`). Display reads the primary; **all writes go through
   `SetValueAll`/`ResetAll`** (per-object, by `m_Name` — index-safe, unlike a single
@@ -263,8 +317,11 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 
 ## Not done yet / ideas
 
-- Playback tab is just the Duration field; Debug tab is a placeholder (live stats, systems,
-  visualizers — see handoff). Renderer tab is implemented (VFXRenderer settings).
+- Playback tab is built out (two-row top transport + Rate, Duration, Seed + Reseed, Reseed on
+  Play, Initial Event, Send Event section — see **Playback tab** above). Debug tab is a placeholder
+  (live stats, systems, visualizers — see handoff). Renderer tab is implemented (VFXRenderer
+  settings). Still TODO for Playback: a real scrubbable **timeline** widget (tick marks/
+  playhead) and live info/systems (shared with Debug).
 - **Generalized ★/Modified is implemented (Phase 2).** Filter chips work per active tab:
   favorites are **namespaced** (`prop:<name>` / `renderer:<m_Field>`; `IsFav`/`ToggleFav`/
   `FavKeyOf`, legacy bare keys migrated by `MigrateFavorites`). Renderer settings are
@@ -276,15 +333,15 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
   (`ResetActiveTab`, active-tab-scoped — All resets properties+renderer+playback). Still
   property-only: copy/paste. Favorites span sources — every tab prepends a **Favorites group**
   of its own favorites, and the All tab's lists property + renderer + playback favorites together
-  (see Favorites group above). Playback **Duration** (default 10s, `kDefaultDuration`,
-  `kDurationFavKey = "play:duration"`) is a first-class row (`BuildDurationRow`): pinnable + with
-  a ↺ reset + a modified marker (`PlaybackModified`/`ResetPlayback`); since it's a tool pref, not
-  a SerializedProperty, its (possibly duplicated favorites + section) copies sync via
-  `RefreshDurationRows` rather than binding. `BuildPlaybackContent` is the favorites-less body the
-  All tab reuses.
+  (see Favorites group above). Playback settings are **`PField`** rows (`BuildPlaybackFields`,
+  fav keys `play:<id>`): pinnable + ↺ reset + modified marker, counted by `PlaybackChipCounts`;
+  since they back live props / tool prefs (not `SerializedProperty`s), copies sync via
+  `RefreshPlaybackRows` rather than binding. `PlaybackModified`/`ResetPlayback` fold over the
+  fields. `BuildPlaybackContent` is the favorites-less body the All tab reuses (the "Playback
+  options" + "Send Event" section groups; the transport lives in the persistent top bar).
 - All standard VFX gizmo types implemented: Position, Direction, Vector, AABox, Line,
   Plane, Cone/Sphere/Circle/Torus (+ Arc variants), OrientedBox, Transform.
 - Preset save (footer button is disabled).
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.
-- Meta (Asset/Initial Event) pin/modified; Debug-tab content + its fav/mod model
+- Meta (Asset) pin/modified; Debug-tab content + its fav/mod model
   once those tabs gain real component settings.
