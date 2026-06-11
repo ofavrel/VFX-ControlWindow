@@ -63,7 +63,7 @@ namespace VfxControl.EditorTools
 
         public string Tab
         {
-            get => SessionState.GetString($"{Prefix}.tab", "props");
+            get => SessionState.GetString($"{Prefix}.tab", "all");
             set => SessionState.SetString($"{Prefix}.tab", value);
         }
 
@@ -73,10 +73,17 @@ namespace VfxControl.EditorTools
             set => SessionState.SetString($"{Prefix}.filter", value);
         }
 
-        public string Category // "all" or a category name
+        public string Category // legacy: pre-rail Properties category (migrated into Sections)
         {
             get => SessionState.GetString($"{Prefix}.category", "all");
             set => SessionState.SetString($"{Prefix}.category", value);
+        }
+
+        // Per-tab rail section selection, packed as "tab=section;tab=section".
+        public string Sections
+        {
+            get => SessionState.GetString($"{Prefix}.sections", "");
+            set => SessionState.SetString($"{Prefix}.sections", value ?? "");
         }
 
         public string Search

@@ -14,9 +14,10 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
 
 ## Files
 
-- **`VfxControlWindow.cs`** — the window. Selection tracking, header, target picker,
-  mini-transport + playback clock, tabs, Properties tab (search/chips/rail/pinned/
-  groups/struct cards/rows), footer, copy-paste, scene-view gizmos, multi-edit.
+- **`VfxControlWindow.cs`** — the window. Selection tracking, header,
+  mini-transport + playback clock, tabs, per-tab Favorites group, Properties tab
+  (search/chips/rail/groups/struct cards/rows), Renderer tab (sibling VFXRenderer settings), footer,
+  copy-paste, scene-view gizmos, multi-edit.
 - **`VfxGraphReflection.cs`** — reflection bridge to the editor-internal VFX graph;
   `GetExposedParameters(asset)` → `List<VfxExposedParam>`.
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
@@ -72,14 +73,48 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
 
 ## UI structure & rendering
 
-- **Header** → **Target picker** (`ObjectField<VisualEffect>`, scene objects; the window
-  edits a *scene* instance, never an asset/prefab-asset — guarded by
-  `EditorUtility.IsPersistent`) → **Asset/Initial Event** rows → **mini-transport** →
-  recessed divider → **tabs** (Properties/Playback/Debug) → body → **footer**
-  (`{n} edited · seed {n}` + Reset all).
-- **Properties tab**: persistent search (`ToolbarSearchField`, placeholder) + filter chips
-  (All/★/Modified) + wheel-scrollable category rail. The filtered list lives in a separate
-  `_listContainer` so typing in search rebuilds only the list (keeps focus). `BuildGroup`
+- **Header** → **Asset/Initial Event** rows → **mini-transport** → recessed divider →
+  **chrome** (search + filter chips, shared across tabs) → **tabs** (All/Properties/
+  Playback/Debug/Renderer) → **section rail** (per-tab) → body → **footer**
+  (`{n} edited · seed {n}` + Reset all). The window is **selection-driven** like an
+  inspector: `RefreshTarget` mirrors the current scene selection (single or multi-VFX
+  sharing one asset) and drops the target when the selection isn't an editable scene
+  VFX — it never edits an asset/prefab-asset (guarded by `EditorUtility.IsPersistent`).
+  There is no manual target field.
+- **Tabs / chrome / rail architecture**: each tab is a `TabDef` (id/label/badge/`HasRail`/
+  `Sections`/`Build`), assembled by `BuildTabDefs`. `Rebuild` builds the chrome **once**
+  (search field kept in `_searchField` so typing never loses focus) plus persistent
+  `_tabsHost`/`_chipsHost`/`_railContainer`/`_tabBody`; every search/chip/rail/tab/favorite/
+  reset interaction routes through **`PopulateActiveTab`** (= the new `RebuildBodyOnly`),
+  which repopulates only tabs+chips+rail+body. **Search filters the active tab only**
+  (`SearchMatches` for IMGUI/meta fields, `Visible` for properties). The **section rail**
+  generalizes the old category rail: Properties→categories, Renderer→Probes/Additional,
+  Playback/Debug→just "All" for now; selection is **per-tab** in `_sections` (packed into
+  `VfxControlState.Sections`, migrating the legacy `Category`). `CurrentSection()` returns
+  "all" for tabs without a rail. The **All tab** (default) is a traditional inspector:
+  Properties+Renderer+Playback stacked with no rail (`BuildAllTab`), each under a **collapsible**
+  top-level header (`AddAllSection`, `.vfx-allsection-head` + `-title`/`-twirl`, collapse key
+  `all:<title>`) that reads above the boxed category headers below it.
+- **Renderer tab**: the `VisualEffect` renders through a sibling **`VFXRenderer`**; this
+  tab exposes its settings (the stock inspector's "Renderer" section) — Probes (Reflection
+  Probes, Light Probes + Proxy Volume Override + Anchor Override) and Additional Settings
+  (Rendering Layer Mask, Priority, Sorting Layer/Order). **Built as UIToolkit `.vfx-row`s**
+  (no IMGUI as of Phase 3a) sharing the property tab's row chrome, in collapsible section
+  groups (`AddRendererSection`, `render:<id>` collapse keys). `ObjectField` (proxy/anchor) and
+  `IntegerField` (priority/order) bind to a multi-renderer `SerializedObject` via `BindProperty`
+  (undo + multi-edit *mixed values* + prefab bars for free); int `IntegerField`s also get the
+  property-row `AttachLabelDragger` for drag-scrub. The **probe usages** are serialized as plain
+  *int* (the stock editor writes `intValue`), so `BindProperty(EnumField)` wouldn't persist —
+  they use `MakeRendererEnum<T>` (manual `intValue`+`ApplyModifiedProperties`) and rebuild the
+  body on change so **Anchor/Proxy rows** appear/disappear. The two with no stock UIToolkit field
+  are hand-built from public SRP APIs so HDRP/URP stay correct: **Rendering Layer Mask** →
+  `MaskField` from `RenderingLayerMask.GetDefinedRenderingLayerNames/Values()`; **Sorting Layer**
+  → `PopupField<string>` from `SortingLayer.layers` (mapped by `.id`, plus an "Add Sorting Layer…"
+  entry → `SettingsService` Tags & Layers). `RefreshRendererState` (via `TrackSerializedObjectValue`
+  on a per-build host) keeps modified markers + chip/footer counts live.
+- **Properties tab**: filtered by the shared chrome search + chips (All/★/Modified) + the
+  category section rail; `PopulateProperties(container, showEmpty)` fills the body (the All
+  tab reuses it with `showEmpty:false`). `BuildGroup`
   is a **custom collapsible** (NOT a `Foldout`) so headers use a `ClickEvent`+`altKey`
   path that reliably catches Option/Alt on macOS — **Alt/Option+click = expand/collapse all
   nested** (works on category headers and struct headers).
@@ -175,9 +210,22 @@ Sphere/Circle/Torus variants work with no extra code).
 
 ## Other features
 
-- **Copy/Paste** (right-click label, category rows + pinned cards): float/Vec2/3/4/Color/
+- **Copy/Paste** (right-click a property row label): float/Vec2/3/4/Color/
   Gradient, via `VfxClipboard` (reflection over internal `UnityEditor.Clipboard`) so values
   round-trip with the **Inspector** both ways.
+- **Favorites group** (`BuildFavoriteGroup`, prepended by `AddFavoriteGroup(body, includeProps, rendererFavs)`):
+  a collapsible group styled like a category (gold `vfx-group-star` in the dot slot) — *not* a
+  card grid — at the **top of every main tab**. Property favorites render **struct-aware** through
+  the same `ComputeFavoriteDisplay` + `AddDisplayEntries` path as categories, so a pinned compound
+  (e.g. Box) keeps its **header row with the space icon + Edit-Gizmo**, not a flat list of leaves.
+  Renderer favorites are `Setting`s (`{ FavKey, Func<VisualElement> BuildRow }`) from
+  `RendererFavoriteSettings`, rendered as rows. Each tab prepends its own (Properties → property
+  favs; Renderer → renderer favs, sharing the section's `SerializedObject`); the **All tab**
+  prepends a *unified* group (properties **+** renderer favorites) sharing one renderer
+  `SerializedObject` with `BuildRendererSections` so both stay in sync. Collapse persists under the
+  `"Favorites"` key in `_collapsed`. Shown only when the rail **section = All**, filter = all, and
+  search is empty (those narrow favorites themselves). Renderer rows reuse the per-build
+  `_rendererRows`/`TrackSerializedObjectValue` so markers stay live.
 - **Playback**: configurable timeline **duration** (default 10s, editable in the Playback
   tab, stored globally in `EditorPrefs`). A ~30fps `Tick` advances the scrub bar by real
   `dt × playRate / duration` while playing and loops (`Reinit` at the end). Mini-transport:
@@ -216,8 +264,27 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 ## Not done yet / ideas
 
 - Playback tab is just the Duration field; Debug tab is a placeholder (live stats, systems,
-  visualizers — see handoff).
+  visualizers — see handoff). Renderer tab is implemented (VFXRenderer settings).
+- **Generalized ★/Modified is implemented (Phase 2).** Filter chips work per active tab:
+  favorites are **namespaced** (`prop:<name>` / `renderer:<m_Field>`; `IsFav`/`ToggleFav`/
+  `FavKeyOf`, legacy bare keys migrated by `MigrateFavorites`). Renderer settings are
+  modelled as `RField` descriptors (`BuildRendererFields`) with per-field availability,
+  `IsModified`, `Reset`, and a UIToolkit `BuildControl` (Phase 3a); each row carries the same
+  hover ↺/★ tools as property rows. **"Modified" = differs from a freshly-created VFX component**: `GetRendererDefaults`
+  snapshots a throwaway `HideAndDontSave` `VisualEffect`+`VFXRenderer` once per domain.
+  Chip counts are **tab-aware** (`TabDef.ChipCounts`); the footer button is **"Reset tab"**
+  (`ResetActiveTab`, active-tab-scoped — All resets properties+renderer+playback). Still
+  property-only: copy/paste. Favorites span sources — every tab prepends a **Favorites group**
+  of its own favorites, and the All tab's lists property + renderer + playback favorites together
+  (see Favorites group above). Playback **Duration** (default 10s, `kDefaultDuration`,
+  `kDurationFavKey = "play:duration"`) is a first-class row (`BuildDurationRow`): pinnable + with
+  a ↺ reset + a modified marker (`PlaybackModified`/`ResetPlayback`); since it's a tool pref, not
+  a SerializedProperty, its (possibly duplicated favorites + section) copies sync via
+  `RefreshDurationRows` rather than binding. `BuildPlaybackContent` is the favorites-less body the
+  All tab reuses.
 - All standard VFX gizmo types implemented: Position, Direction, Vector, AABox, Line,
   Plane, Cone/Sphere/Circle/Torus (+ Arc variants), OrientedBox, Transform.
 - Preset save (footer button is disabled).
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.
+- Meta (Asset/Initial Event) pin/modified; Debug-tab content + its fav/mod model
+  once those tabs gain real component settings.

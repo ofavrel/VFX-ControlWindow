@@ -16,9 +16,9 @@ MonoBehaviour:
   - title: Base Loop
     position:
       serializedVersion: 2
-      x: 1185
+      x: 1201
       y: -1408
-      width: 692
+      width: 676
       height: 2728
     contents:
     - model: {fileID: 8926484042661614608}
@@ -87,6 +87,9 @@ MonoBehaviour:
     - model: {fileID: 8926484042661614855}
       id: 0
       isStickyNote: 0
+    - model: {fileID: 8926484042661616072}
+      id: 0
+      isStickyNote: 0
   - title: Burst
     position:
       serializedVersion: 2
@@ -112,7 +115,7 @@ MonoBehaviour:
   - name: Spawn
     collapsed: 0
   - name: Initialize
-    collapsed: 1
+    collapsed: 0
   - name: Render
     collapsed: 0
   - name: Forces
@@ -121,9 +124,9 @@ MonoBehaviour:
     collapsed: 0
   uiBounds:
     serializedVersion: 2
-    x: 1185
+    x: 1200
     y: -1408
-    width: 1817
+    width: 1802
     height: 2728
 --- !u!114 &114350483966674976
 MonoBehaviour:
@@ -167,6 +170,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616066}
   - {fileID: 8926484042661616068}
   - {fileID: 8926484042661616070}
+  - {fileID: 8926484042661616072}
   m_UIPosition: {x: 0, y: 0}
   m_UICollapsed: 1
   m_UISuperCollapsed: 0
@@ -398,6 +402,21 @@ MonoBehaviour:
     max: 6.2831855
     enumValues: []
     descendantCount: 0
+  - name: Initialize
+    path: Initialize
+    tooltip: 
+    space: -1
+    spaceable: 0
+    sheetType: m_Bool
+    realType: Boolean
+    defaultValue:
+      m_Type:
+        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: False
+    min: -Infinity
+    max: Infinity
+    enumValues: []
+    descendantCount: 0
   - name: Render
     path: 
     tooltip: 
@@ -409,21 +428,6 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: 
       m_SerializableObject: 
-    min: -Infinity
-    max: Infinity
-    enumValues: []
-    descendantCount: 0
-  - name: Render
-    path: Render
-    tooltip: 
-    space: -1
-    spaceable: 0
-    sheetType: m_Bool
-    realType: Boolean
-    defaultValue:
-      m_Type:
-        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
-      m_SerializableObject: True
     min: -Infinity
     max: Infinity
     enumValues: []
@@ -473,6 +477,21 @@ MonoBehaviour:
     max: Infinity
     enumValues: []
     descendantCount: 0
+  - name: Render
+    path: Render
+    tooltip: 
+    space: -1
+    spaceable: 0
+    sheetType: m_Bool
+    realType: Boolean
+    defaultValue:
+      m_Type:
+        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: True
+    min: -Infinity
+    max: Infinity
+    enumValues: []
+    descendantCount: 0
   - name: Forces
     path: 
     tooltip: 
@@ -499,21 +518,6 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
       m_SerializableObject: 0.5
-    min: -Infinity
-    max: Infinity
-    enumValues: []
-    descendantCount: 0
-  - name: Forces
-    path: Forces
-    tooltip: 
-    space: -1
-    spaceable: 0
-    sheetType: m_Bool
-    realType: Boolean
-    defaultValue:
-      m_Type:
-        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
-      m_SerializableObject: True
     min: -Infinity
     max: Infinity
     enumValues: []
@@ -548,6 +552,21 @@ MonoBehaviour:
     max: Infinity
     enumValues: []
     descendantCount: 0
+  - name: Forces
+    path: Forces
+    tooltip: 
+    space: -1
+    spaceable: 0
+    sheetType: m_Bool
+    realType: Boolean
+    defaultValue:
+      m_Type:
+        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: True
+    min: -Infinity
+    max: Infinity
+    enumValues: []
+    descendantCount: 0
   - name: Noise
     path: 
     tooltip: 
@@ -559,21 +578,6 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: 
       m_SerializableObject: 
-    min: -Infinity
-    max: Infinity
-    enumValues: []
-    descendantCount: 0
-  - name: Noise
-    path: Noise
-    tooltip: 
-    space: -1
-    spaceable: 0
-    sheetType: m_Bool
-    realType: Boolean
-    defaultValue:
-      m_Type:
-        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
-      m_SerializableObject: True
     min: -Infinity
     max: Infinity
     enumValues: []
@@ -724,6 +728,21 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
       m_SerializableObject: 2
+    min: -Infinity
+    max: Infinity
+    enumValues: []
+    descendantCount: 0
+  - name: Noise
+    path: Noise
+    tooltip: 
+    space: -1
+    spaceable: 0
+    sheetType: m_Bool
+    realType: Boolean
+    defaultValue:
+      m_Type:
+        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: True
     min: -Infinity
     max: Infinity
     enumValues: []
@@ -3334,7 +3353,7 @@ MonoBehaviour:
   - {fileID: 8926484042661614872}
   m_ExposedName: Size
   m_Exposed: 1
-  m_Order: 1
+  m_Order: 2
   m_Category: Render
   m_Min:
     m_Type:
@@ -3413,7 +3432,7 @@ MonoBehaviour:
   - {fileID: 8926484042661614874}
   m_ExposedName: Linear Drag
   m_Exposed: 1
-  m_Order: 0
+  m_Order: 3
   m_Category: Forces
   m_Min:
     m_Type:
@@ -3835,7 +3854,7 @@ MonoBehaviour:
   - {fileID: 8926484042661614980}
   m_ExposedName: Gravity
   m_Exposed: 1
-  m_Order: 2
+  m_Order: 5
   m_Category: Forces
   m_Min:
     m_Type:
@@ -4046,7 +4065,7 @@ MonoBehaviour:
   - {fileID: 8926484042661615311}
   m_ExposedName: Color
   m_Exposed: 1
-  m_Order: 2
+  m_Order: 6
   m_Category: Render
   m_Min:
     m_Type:
@@ -4450,7 +4469,7 @@ MonoBehaviour:
   - {fileID: 8926484042661615323}
   m_ExposedName: Gradient
   m_Exposed: 1
-  m_Order: 3
+  m_Order: 7
   m_Category: Render
   m_Min:
     m_Type:
@@ -7752,7 +7771,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616041}
   m_ExposedName: Transform
   m_Exposed: 1
-  m_Order: 1
+  m_Order: 9
   m_Category: Noise
   m_Min:
     m_Type:
@@ -7771,7 +7790,7 @@ MonoBehaviour:
     linkedSlots:
     - outputSlot: {fileID: 8926484042661616041}
       inputSlot: {fileID: 8926484042661615378}
-    position: {x: 1228, y: 183}
+    position: {x: 1245, y: 171.5}
     expandedSlots: []
     expanded: 1
     supecollapsed: 1
@@ -8227,7 +8246,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616055}
   m_ExposedName: Intensity
   m_Exposed: 1
-  m_Order: 2
+  m_Order: 10
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8306,7 +8325,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616057}
   m_ExposedName: Drag
   m_Exposed: 1
-  m_Order: 3
+  m_Order: 11
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8385,7 +8404,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616059}
   m_ExposedName: Frequency
   m_Exposed: 1
-  m_Order: 4
+  m_Order: 12
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8464,7 +8483,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616061}
   m_ExposedName: Octaves
   m_Exposed: 1
-  m_Order: 5
+  m_Order: 13
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8543,7 +8562,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616063}
   m_ExposedName: Roughness
   m_Exposed: 1
-  m_Order: 6
+  m_Order: 14
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8622,7 +8641,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616065}
   m_ExposedName: Lacunarity
   m_Exposed: 1
-  m_Order: 7
+  m_Order: 15
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8701,7 +8720,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616067}
   m_ExposedName: Noise
   m_Exposed: 1
-  m_Order: 0
+  m_Order: 16
   m_Category: Noise
   m_Min:
     m_Type:
@@ -8720,7 +8739,7 @@ MonoBehaviour:
     linkedSlots:
     - outputSlot: {fileID: 8926484042661616067}
       inputSlot: {fileID: 8926484042661615397}
-    position: {x: 1210, y: 99}
+    position: {x: 1239, y: 99}
     expandedSlots: []
     expanded: 1
     supecollapsed: 1
@@ -8780,7 +8799,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616069}
   m_ExposedName: Forces
   m_Exposed: 1
-  m_Order: 1
+  m_Order: 17
   m_Category: Forces
   m_Min:
     m_Type:
@@ -8862,7 +8881,7 @@ MonoBehaviour:
   - {fileID: 8926484042661616071}
   m_ExposedName: Render
   m_Exposed: 1
-  m_Order: 0
+  m_Order: 18
   m_Category: Render
   m_Min:
     m_Type:
@@ -8924,3 +8943,79 @@ MonoBehaviour:
   - {fileID: 8926484042661614870}
   - {fileID: 8926484042661615321}
   - {fileID: 8926484042661614724}
+--- !u!114 &8926484042661616072
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 330e0fca1717dde4aaa144f48232aa64, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.VisualEffectGraph.Editor::UnityEditor.VFX.VFXParameter
+  m_UIIgnoredErrors: []
+  m_Parent: {fileID: 114350483966674976}
+  m_Children: []
+  m_UIPosition: {x: 0, y: 0}
+  m_UICollapsed: 1
+  m_UISuperCollapsed: 0
+  m_InputSlots: []
+  m_OutputSlots:
+  - {fileID: 8926484042661616073}
+  m_ExposedName: Initialize
+  m_Exposed: 1
+  m_Order: 19
+  m_Category: Initialize
+  m_Min:
+    m_Type:
+      m_SerializableType: 
+    m_SerializableObject: 
+  m_Max:
+    m_Type:
+      m_SerializableType: 
+    m_SerializableObject: 
+  m_IsOutput: 0
+  m_EnumValues: []
+  m_ValueFilter: 0
+  m_Tooltip: 
+  m_Nodes:
+  - m_Id: 0
+    linkedSlots: []
+    position: {x: 1225.5, y: -3.5}
+    expandedSlots: []
+    expanded: 1
+    supecollapsed: 0
+--- !u!114 &8926484042661616073
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b4c11ff25089a324daf359f4b0629b33, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.VisualEffectGraph.Editor::UnityEditor.VFX.VFXSlotBool
+  m_UIIgnoredErrors: []
+  m_Parent: {fileID: 0}
+  m_Children: []
+  m_UIPosition: {x: 0, y: 0}
+  m_UICollapsed: 1
+  m_UISuperCollapsed: 0
+  m_MasterSlot: {fileID: 8926484042661616073}
+  m_MasterData:
+    m_Owner: {fileID: 8926484042661616072}
+    m_Value:
+      m_Type:
+        m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: False
+    m_Space: -1
+  m_Property:
+    name: o
+    m_serializedType:
+      m_SerializableType: System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+  m_Direction: 1
+  m_LinkedSlots: []

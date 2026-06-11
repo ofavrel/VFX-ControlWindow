@@ -18,6 +18,7 @@ using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
 using VfxControl.EditorTools;
@@ -49,14 +50,22 @@ namespace VfxControl.EditorTools
         HashSet<string> _constrained = new HashSet<string>(); // proportional-edit vectors
         string _search = "";
         string _filter = "all";   // all | fav | mod
-        string _category = "all";
-        string _tab = "props";    // props | play | debug
+        string _tab = "all";      // all | props | play | debug | render
+        // per-tab rail section ("all" or a section id); the All tab has no rail.
+        readonly Dictionary<string, string> _sections = new Dictionary<string, string>();
+
+        // tab descriptors (id/label/badge/rail sections/body builder), rebuilt each Rebuild.
+        List<TabDef> _tabDefs;
 
         // --- live element refs ---
         VisualElement _miniFill;
         Label _timeLabel, _liveLabel, _footNote;
         Button _resetAllBtn, _playBtn;
         Image _playIcon;
+        // persistent chrome containers: the search field is built ONCE (so typing never
+        // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
+        ToolbarSearchField _searchField;
+        VisualElement _chipsHost, _tabsHost, _railContainer, _tabBody;
         float _scrubT;
 
         // scene-view edit gizmo (custom Handles) for spaceable Position/Direction/Box
@@ -91,9 +100,28 @@ namespace VfxControl.EditorTools
         readonly Dictionary<VfxExposedParam, List<VfxExposedParam>> _inlineStruct =
             new Dictionary<VfxExposedParam, List<VfxExposedParam>>();
 
-        // the filtered pinned-tray + groups list; rebuilt on search/filter without
-        // recreating the search field (which would steal focus mid-typing).
-        VisualElement _listContainer;
+        // A tab: its id/label, optional badge count, and (when it has a rail) the rail's
+        // sections beyond "All". `Build` fills the body for the current search/section/filter.
+        sealed class TabDef
+        {
+            public string Id;
+            public string Label;
+            public int Count = -1;                 // -1 => no badge
+            public bool HasRail;
+            public Func<List<SectionDef>> Sections; // extra sections (rail prepends "All")
+            public Action<VisualElement> Build;
+            public Func<(int leaf, int fav, int mod)> ChipCounts; // for the filter chip badges
+        }
+
+        // A rail entry. Dot is drawn only when HasDot (category accents); section tabs
+        // like Probes/Additional render dot-less like the "All" button.
+        sealed class SectionDef
+        {
+            public string Id;
+            public string Label;
+            public Color Dot;
+            public bool HasDot;
+        }
 
         [MenuItem("Window/VFX Control")]
         public static void Open()
@@ -224,17 +252,11 @@ namespace VfxControl.EditorTools
                 return;
             }
 
-            // The selection isn't a scene Visual Effect. Keep whatever target we
-            // already have (e.g. one assigned via the target field) — clicking
-            // around the scene shouldn't drop it. Only surface guidance when there
-            // is no target at all.
-            if (_effect != null)
-            {
-                _selectionHint = null;
-                if (_so == null) SetTarget(_effect, GatherTargets(_effect)); // SerializedObject doesn't survive a domain reload
-                return;
-            }
+            // The selection isn't a scene Visual Effect. The window mirrors the
+            // current selection (like an inspector), so drop the target and surface
+            // guidance — there's no manual target field to fall back on.
             _selectionHint = hint;
+            if (_effect != null) SetTarget(null);
         }
 
         // All selected scene VisualEffects sharing the primary's asset (primary first),
@@ -287,12 +309,47 @@ namespace VfxControl.EditorTools
                 : "";
             _state = new VfxControlState(guid);
             _favorites = _state.LoadFavorites();
+            MigrateFavorites();
             _collapsed = _state.LoadCollapsed();
             _constrained = _state.LoadConstrained();
             _tab = _state.Tab;
             _filter = _state.Filter;
-            _category = _state.Category;
             _search = _state.Search;
+            LoadSections();
+        }
+
+        // Per-tab rail section, persisted as a packed "tab=section;..." session string.
+        void LoadSections()
+        {
+            _sections.Clear();
+            var raw = _state.Sections;
+            if (!string.IsNullOrEmpty(raw))
+                foreach (var pair in raw.Split(';'))
+                {
+                    int eq = pair.IndexOf('=');
+                    if (eq > 0) _sections[pair.Substring(0, eq)] = pair.Substring(eq + 1);
+                }
+            // migrate the pre-rail Properties category selection (one-time)
+            if (!_sections.ContainsKey("props") && _state.Category != "all")
+                _sections["props"] = _state.Category;
+        }
+
+        void SaveSections() =>
+            _state.Sections = string.Join(";", _sections.Select(kv => $"{kv.Key}={kv.Value}"));
+
+        // The active tab's selected rail section ("all" when no rail / nothing chosen).
+        string CurrentSection()
+        {
+            var def = ActiveTabDef();
+            if (def == null || !def.HasRail) return "all";
+            return _sections.TryGetValue(_tab, out var s) ? s : "all";
+        }
+
+        void SetSection(string id)
+        {
+            string cur = _sections.TryGetValue(_tab, out var s) ? s : "all";
+            _sections[_tab] = (cur == id) ? "all" : id; // re-clicking the active section clears it
+            SaveSections();
         }
 
         // ------------------------------------------------------------------ build
@@ -308,12 +365,11 @@ namespace VfxControl.EditorTools
                 root.styleSheets.Add(uss);
 
             root.Add(BuildHeader());
-            root.Add(BuildTargetPicker()); // always visible so a target can be assigned
 
             if (_effect == null)
             {
                 var ph = new Label(_selectionHint ??
-                    "Pick a Visual Effect from the scene above, or select one in the Hierarchy.");
+                    "Select a Visual Effect in the Hierarchy to edit its instance properties.");
                 ph.AddToClassList("vfx-placeholder");
                 root.Add(ph);
                 return;
@@ -325,20 +381,155 @@ namespace VfxControl.EditorTools
             root.Add(BuildMetaSection());
             root.Add(BuildMiniTransport());
             root.Add(MakeElement("vfx-section-gap"));   // the intentional divider
-            root.Add(BuildTabs());
 
-            var body = new ScrollView { name = "body" };
-            body.AddToClassList("vfx-scroll");
-            switch (_tab)
-            {
-                case "props": BuildPropertiesTab(body); break;
-                case "play": BuildPlaybackTab(body); break;
-                case "debug": BuildPlaceholder(body, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."); break;
-            }
-            root.Add(body);
+            // Persistent chrome: search + chips ABOVE the tabs (shared across tabs), then
+            // the tab strip, the per-tab section rail, and the body. Only the search field
+            // is built once; chips/tabs/rail/body are repopulated by PopulateActiveTab so
+            // typing never detaches (and unfocuses) the search field.
+            _tabDefs = BuildTabDefs();
+            BuildCategoryColorMap();        // rail dots + pinned cards need the color map
+            root.Add(BuildChrome());        // search field + _chipsHost
+
+            _tabsHost = MakeElement("vfx-tabs");
+            root.Add(_tabsHost);
+
+            _railContainer = MakeElement("vfx-rail-host");
+            root.Add(_railContainer);
+
+            _tabBody = new ScrollView { name = "body" };
+            _tabBody.AddToClassList("vfx-scroll");
+            root.Add(_tabBody);
 
             root.Add(BuildFooter());
+            PopulateActiveTab();
             UpdateLive();
+        }
+
+        // The ordered tab set. Counts/sections read live state, so this is rebuilt each
+        // structural Rebuild (cheap). The "All" tab opts out of the rail (HasRail=false).
+        List<TabDef> BuildTabDefs() => new List<TabDef>
+        {
+            new TabDef { Id = "all", Label = "All", HasRail = false, Build = BuildAllTab, ChipCounts = AllChipCounts },
+            new TabDef
+            {
+                Id = "props", Label = "Properties", Count = _params.Count(p => !p.IsStruct),
+                HasRail = true, Sections = PropertySections,
+                Build = body => { AddFavoriteGroup(body, includeProps: true, null); PopulateProperties(body); },
+                ChipCounts = PropertyChipCounts,
+            },
+            new TabDef { Id = "play", Label = "Playback", HasRail = true, Sections = NoSections, Build = BuildPlaybackTab, ChipCounts = () => (1, IsFav(kDurationFavKey) ? 1 : 0, PlaybackModified() ? 1 : 0) },
+            new TabDef
+            {
+                Id = "debug", Label = "Debug", HasRail = true, Sections = NoSections,
+                Build = body => BuildPlaceholder(body, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."),
+                ChipCounts = () => (0, 0, 0),
+            },
+            new TabDef { Id = "render", Label = "Renderer", HasRail = true, Sections = RendererSections, Build = BuildRendererTab, ChipCounts = RendererChipCounts },
+        };
+
+        (int leaf, int fav, int mod) PropertyChipCounts() => (
+            _params.Count(p => !p.IsStruct),
+            _params.Count(p => !p.IsStruct && IsFav(FavKeyOf(p))),
+            VfxPropertySheet.CountModified(_so, _params));
+
+        // The All tab aggregates properties + renderer (playback has no fav/mod model yet).
+        (int leaf, int fav, int mod) AllChipCounts()
+        {
+            var p = PropertyChipCounts();
+            var r = RendererChipCounts();
+            return (p.leaf + r.leaf, p.fav + r.fav, p.mod + r.mod);
+        }
+
+        TabDef ActiveTabDef()
+        {
+            if (_tabDefs == null) return null;
+            return _tabDefs.FirstOrDefault(t => t.Id == _tab) ?? _tabDefs[0];
+        }
+
+        static List<SectionDef> NoSections() => new List<SectionDef>();
+
+        // Properties sections = the distinct categories, in graph order, each with its accent dot.
+        List<SectionDef> PropertySections()
+        {
+            var cats = new List<string>();
+            foreach (var p in _params)
+            {
+                var cat = CategoryOf(p);
+                if (!cats.Contains(cat)) cats.Add(cat);
+            }
+            return cats.Select(c => new SectionDef { Id = c, Label = c, Dot = GetCategoryColor(c), HasDot = true }).ToList();
+        }
+
+        // Renderer sections mirror the two IMGUI foldouts.
+        static List<SectionDef> RendererSections() => new List<SectionDef>
+        {
+            new SectionDef { Id = "probes", Label = "Probes" },
+            new SectionDef { Id = "additional", Label = "Additional Settings" },
+        };
+
+        // Search + chips chrome. Built once per Rebuild; the search field reference is kept
+        // so PopulateActiveTab never recreates it (preserving focus while typing).
+        VisualElement BuildChrome()
+        {
+            var subbar = MakeElement("vfx-subbar");
+
+            _searchField = new ToolbarSearchField();
+            _searchField.AddToClassList("vfx-search");
+            _searchField.placeholderText = "Search…";
+            _searchField.value = _search;
+            _searchField.RegisterValueChangedCallback(e =>
+            {
+                _search = e.newValue ?? "";
+                _state.Search = _search;
+                PopulateActiveTab(); // filters the active tab; chrome (search field) untouched
+            });
+            subbar.Add(_searchField);
+
+            _chipsHost = MakeElement("vfx-filterchips");
+            subbar.Add(_chipsHost);
+            return subbar;
+        }
+
+        // Rebuild only the parts that depend on the active tab / filter / search / section,
+        // leaving the search field (and the rest of the chrome) intact.
+        void PopulateActiveTab()
+        {
+            if (_tabBody == null) return;
+            var def = ActiveTabDef();
+            if (def == null) return;
+
+            PopulateChips();
+            PopulateTabs();
+
+            _railContainer.Clear();
+            if (def.HasRail) _railContainer.Add(BuildRail(def));
+
+            _tabBody.Clear();
+            _refreshers.Clear();    // controls about to be discarded
+            _structHeaders.Clear();
+            _durationRows.Clear();
+            def.Build(_tabBody);
+
+            UpdateFooter();
+        }
+
+        void PopulateTabs()
+        {
+            if (_tabsHost == null) return;
+            _tabsHost.Clear();
+            foreach (var def in _tabDefs)
+                _tabsHost.Add(MakeTab(def.Id, def.Label, def.Count));
+        }
+
+        void PopulateChips()
+        {
+            if (_chipsHost == null) return;
+            _chipsHost.Clear();
+            var def = ActiveTabDef();
+            var (leafCount, favCount, modCount) = def?.ChipCounts != null ? def.ChipCounts() : (0, 0, 0);
+            _chipsHost.Add(MakeChip("all", "All", leafCount));
+            _chipsHost.Add(MakeChip("fav", "★", favCount));
+            _chipsHost.Add(MakeChip("mod", "Modified", modCount));
         }
 
         VisualElement BuildHeader()
@@ -360,41 +551,6 @@ namespace VfxControl.EditorTools
 
         // The window's target: an explicit picker for a Visual Effect component in
         // the scene Hierarchy (drag a GameObject in, or use the object picker).
-        VisualElement BuildTargetPicker()
-        {
-            var meta = MakeElement("vfx-meta");
-
-            var row = MakeElement("vfx-meta-row");
-            var label = new Label("Visual Effect");
-            label.AddToClassList("vfx-mlabel");
-            row.Add(label);
-
-            var field = new ObjectField { objectType = typeof(VisualEffect), allowSceneObjects = true };
-            field.AddToClassList("vfx-meta-field");
-            field.tooltip = "The scene Visual Effect component this window edits.";
-            field.SetValueWithoutNotify(_effect);
-            field.RegisterValueChangedCallback(e =>
-            {
-                var ve = e.newValue as VisualEffect;
-                if (ve != null && EditorUtility.IsPersistent(ve))
-                {
-                    _selectionHint = "That Visual Effect lives on a prefab/asset in the Project.\n" +
-                                     "Use an instance that exists in an open scene.";
-                    SetTarget(null);
-                }
-                else
-                {
-                    _selectionHint = null;
-                    SetTarget(ve);
-                }
-                Rebuild();
-            });
-            row.Add(field);
-            meta.Add(row);
-
-            return meta;
-        }
-
         VisualElement BuildMetaSection()
         {
             var meta = MakeElement("vfx-meta");
@@ -513,20 +669,11 @@ namespace VfxControl.EditorTools
             UpdateLive();
         }
 
-        VisualElement BuildTabs()
-        {
-            var tabs = MakeElement("vfx-tabs");
-            tabs.Add(MakeTab("props", "Properties", _params.Count(p => !p.IsStruct)));
-            tabs.Add(MakeTab("play", "Playback", -1));
-            tabs.Add(MakeTab("debug", "Debug", -1));
-            return tabs;
-        }
-
         Button MakeTab(string id, string label, int count)
         {
             // Use child Labels (not the Button's intrinsic text) so the label and the
             // count badge flow as flex items left-to-right instead of overlapping.
-            var tab = new Button(() => { _tab = id; _state.Tab = id; Rebuild(); });
+            var tab = new Button(() => { _tab = id; _state.Tab = id; PopulateActiveTab(); });
             tab.AddToClassList("vfx-tab");
             if (_tab == id) tab.AddToClassList("vfx-tab--active");
             tab.Add(new Label(label));
@@ -541,61 +688,16 @@ namespace VfxControl.EditorTools
 
         // ------------------------------------------------------------------ properties tab
 
-        void BuildPropertiesTab(VisualElement body)
+        // Fill `container` with the filtered pinned tray + category groups. `showEmpty`
+        // suppresses the "nothing matches" note when stacked under other blocks (All tab).
+        // Category groups for the Properties content. The Favorites group is added separately
+        // by the tab builder (AddFavoriteGroup), so this is purely the categorized list.
+        void PopulateProperties(VisualElement container, bool showEmpty = true)
         {
-            BuildCategoryColorMap();
-
-            // sub bar: search + filter chips (persist while typing in the search)
-            var subbar = MakeElement("vfx-subbar");
-
-            var search = new ToolbarSearchField();
-            search.AddToClassList("vfx-search");
-            search.placeholderText = "Search Properties…";
-            search.value = _search;
-            search.RegisterValueChangedCallback(e =>
-            {
-                _search = e.newValue ?? "";
-                _state.Search = _search;
-                PopulateList(); // only rebuild the list, keeping the search field focused
-            });
-            subbar.Add(search);
-
-            int leafCount = _params.Count(p => !p.IsStruct);
-            int favCount = _params.Count(p => !p.IsStruct && _favorites.Contains(p.Name));
-            int modCount = VfxPropertySheet.CountModified(_so, _params);
-
-            var chips = MakeElement("vfx-filterchips");
-            chips.Add(MakeChip("all", $"All", leafCount));
-            chips.Add(MakeChip("fav", "★", favCount));
-            chips.Add(MakeChip("mod", "Modified", modCount));
-            subbar.Add(chips);
-            body.Add(subbar);
-
-            // horizontal category rail (wheel scrolls horizontally)
-            body.Add(BuildCategoryRail());
-
-            // filtered list lives in its own container so search typing can rebuild
-            // just this part without recreating (and unfocusing) the search field.
-            _listContainer = new VisualElement();
-            body.Add(_listContainer);
-            PopulateList();
-        }
-
-        void PopulateList()
-        {
-            if (_listContainer == null) return;
-            _listContainer.Clear();
-            _refreshers.Clear(); // the controls we're about to discard are gone
-            _structHeaders.Clear();
+            if (container == null) return;
             BuildStructLeavesMap();
 
-            int favCount = _params.Count(p => !p.IsStruct && _favorites.Contains(p.Name));
             bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
-
-            bool showTray = _category == "all" && _filter == "all" &&
-                            string.IsNullOrEmpty(_search.Trim()) && favCount > 0;
-            if (showTray)
-                _listContainer.Add(BuildPinnedTray());
 
             // group all entries (structs + leaves) by category, preserving graph order
             var ordered = new List<string>();
@@ -616,14 +718,14 @@ namespace VfxControl.EditorTools
                 // gate detected from the FULL category list (not the filtered display) so
                 // the header enable toggle still shows even when search hides the bool
                 var gate = FindCategoryGate(cat, byCat[cat]);
-                _listContainer.Add(BuildGroup(cat, display, forceOpen, gate));
+                container.Add(BuildGroup(cat, display, forceOpen, gate));
             }
 
-            if (shownLeaves == 0)
+            if (shownLeaves == 0 && showEmpty)
             {
                 var empty = new Label(EmptyMessage());
                 empty.AddToClassList("vfx-empty");
-                _listContainer.Add(empty);
+                container.Add(empty);
             }
         }
 
@@ -684,37 +786,650 @@ namespace VfxControl.EditorTools
             return list;
         }
 
+        // Like ComputeDisplay but keyed on favorites: favorited leaves + the struct parents that
+        // contain them — so a pinned struct (e.g. Box) keeps its header row + Edit-Gizmo, not a
+        // flat list of components. Operates over the whole param list (favorites span categories).
+        List<VfxExposedParam> ComputeFavoriteDisplay()
+        {
+            int n = _params.Count;
+            var show = new bool[n];
+            for (int i = 0; i < n; i++)
+                if (!_params[i].IsStruct) show[i] = IsFav(FavKeyOf(_params[i]));
+            for (int i = n - 1; i >= 0; i--)
+                if (_params[i].IsStruct)
+                {
+                    int d = _params[i].Depth;
+                    for (int j = i + 1; j < n && _params[j].Depth > d; j++)
+                        if (show[j]) { show[i] = true; break; }
+                }
+
+            var list = new List<VfxExposedParam>();
+            for (int i = 0; i < n; i++) if (show[i]) list.Add(_params[i]);
+            return list;
+        }
+
         // ------------------------------------------------------------------ playback tab
+
+        // Does a field/section label match the current search query? (empty query = match all)
+        bool SearchMatches(string label)
+        {
+            string q = _search.Trim().ToLowerInvariant();
+            return string.IsNullOrEmpty(q) || (label != null && label.ToLowerInvariant().Contains(q));
+        }
+
+        const string kDurationFavKey = "play:duration";
 
         void BuildPlaybackTab(VisualElement body)
         {
-            var section = MakeElement("vfx-meta");
+            AddFavoriteGroup(body, includeProps: false, PlaybackFavoriteSettings());
+            BuildPlaybackContent(body);
+        }
 
-            var row = MakeElement("vfx-meta-row");
+        // The Playback content (Duration row + placeholders) without the favorites group — so the
+        // All tab can stack it under one unified favorites group instead of a second one.
+        void BuildPlaybackContent(VisualElement body)
+        {
+            // Duration is the one Playback setting; default 10s. A first-class row: pinnable,
+            // resettable, modified when != default (so the Modified/★ chips + Reset tab include it).
+            bool chipOk = _filter == "all"
+                          || (_filter == "mod" && PlaybackModified())
+                          || (_filter == "fav" && IsFav(kDurationFavKey));
+            if (SearchMatches("Duration") && chipOk)
+            {
+                body.Add(BuildDurationRow());
+                BuildPlaceholder(body, "More playback controls coming in the next pass.\nTransport, options, send-event.");
+            }
+            else if (_filter != "all")
+            {
+                BuildPlaceholder(body, _filter == "fav" ? "No favorite playback settings." : "No modified playback settings.");
+            }
+            else
+            {
+                BuildPlaceholder(body, $"No playback settings match “{_search}”.");
+            }
+        }
+
+        List<Setting> PlaybackFavoriteSettings()
+        {
+            var list = new List<Setting>();
+            if (IsFav(kDurationFavKey))
+                list.Add(new Setting { FavKey = kDurationFavKey, BuildRow = BuildDurationRow });
+            return list;
+        }
+
+        // The Duration row, styled like any property/renderer row (label · control · hover ↺/★).
+        // Duration is a tool pref (not a SerializedProperty), so edits sync the (possibly two)
+        // visible copies via RefreshDurationRows rather than binding.
+        VisualElement BuildDurationRow()
+        {
+            var row = MakeElement("vfx-row");
+            row.EnableInClassList("vfx-row--modified", PlaybackModified());
+            if (IsFav(kDurationFavKey)) row.AddToClassList("vfx-row--fav");
+
+            var labelCol = MakeElement("vfx-label-col");
             var label = new Label("Duration (s)") { tooltip = "Length of the play/scrub timeline window before it loops." };
-            label.AddToClassList("vfx-mlabel");
-            row.Add(label);
+            label.AddToClassList("vfx-plabel");
+            labelCol.Add(label);
+            row.Add(labelCol);
+
+            row.Add(MakeElement("vfx-row-lock")); // align with the other rows' lock gutter
 
             var field = new FloatField { value = _duration };
-            field.AddToClassList("vfx-meta-field");
+            field.AddToClassList("vfx-pcontrol");
             field.RegisterValueChangedCallback(e =>
             {
                 _duration = Mathf.Max(0.1f, e.newValue);
                 VfxControlState.SetTimelineDuration(_duration);
-                field.SetValueWithoutNotify(_duration);
                 UpdateLive();
+                RefreshDurationRows();
             });
+            AttachLabelDragger(label, field); // drag the label to scrub, like a native float field
             row.Add(field);
-            section.Add(row);
-            body.Add(section);
 
-            BuildPlaceholder(body, "More playback controls coming in the next pass.\nTransport, options, send-event.");
+            var tools = MakeElement("vfx-row-tools");
+            var reset = MakeIconButton("↺", "Reset to default", () => { ResetPlayback(); RefreshDurationRows(); });
+            reset.AddToClassList("vfx-tool-reset");
+            tools.Add(reset);
+            var star = MakeIconButton(IsFav(kDurationFavKey) ? "★" : "☆", IsFav(kDurationFavKey) ? "Unpin" : "Pin", () => ToggleFav(kDurationFavKey));
+            star.AddToClassList("vfx-tool-fav");
+            tools.Add(star);
+            row.Add(tools);
+
+            _durationRows.Add((row, field));
+            return row;
+        }
+
+        // Keep every visible Duration row (favorites copy + section copy) + chrome in sync.
+        void RefreshDurationRows()
+        {
+            foreach (var (row, field) in _durationRows)
+            {
+                field.SetValueWithoutNotify(_duration);
+                row.EnableInClassList("vfx-row--modified", PlaybackModified());
+            }
+            PopulateChips();
+            UpdateFooter();
+        }
+
+        // The "All" tab: a traditional inspector — properties, renderer, and playback stacked
+        // in one scroll with no section rail. Search still filters each block (the section is
+        // forced to "all" because this tab has no rail). Each block sits under a collapsible
+        // top-level header (AddAllSection); a unified Favorites group sits above them.
+        void BuildAllTab(VisualElement body)
+        {
+            // One renderer SerializedObject + fields, shared by the unified pinned group and the
+            // Renderer section below (so both edit the same instance and stay in sync).
+            var renderers = GetRenderers();
+            SerializedObject rendererSo = null;
+            List<RField> rendererFields = null;
+            if (renderers.Length > 0)
+            {
+                rendererSo = new SerializedObject(renderers.Cast<Object>().ToArray());
+                rendererFields = BuildRendererFields(rendererSo, renderers, GetRendererDefaults());
+            }
+            _rendererRows = new List<(VisualElement, RField)>(); // reset before any renderer row
+
+            // Unified Favorites group: property favorites (struct-aware) + renderer + playback.
+            var extraFavs = RendererFavoriteSettings(rendererSo, rendererFields);
+            extraFavs.AddRange(PlaybackFavoriteSettings());
+            AddFavoriteGroup(body, includeProps: true, extraFavs);
+
+            AddAllSection(body, "Properties", c => PopulateProperties(c, showEmpty: false));
+            AddAllSection(body, "Renderer", c =>
+            {
+                if (renderers.Length == 0)
+                    BuildPlaceholder(c, "This Visual Effect has no renderer component to configure.");
+                else
+                    c.Add(BuildRendererSections(rendererSo, rendererFields));
+            });
+            AddAllSection(body, "Playback", BuildPlaybackContent); // favorites shown in the unified group above
+        }
+
+        // A collapsible top-level section on the All tab: a header (twirl + title) over a content
+        // container whose display toggles. Collapse persists under "all:<title>" in _collapsed.
+        void AddAllSection(VisualElement body, string title, Action<VisualElement> buildContent)
+        {
+            string key = "all:" + title;
+            bool open = !_collapsed.Contains(key);
+
+            var header = MakeElement("vfx-allsection-head");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-allsection-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label(title);
+            titleLbl.AddToClassList("vfx-allsection-title");
+            header.Add(titleLbl);
+            header.tooltip = "Click to expand/collapse";
+            header.RegisterCallback<ClickEvent>(e =>
+            {
+                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                _state.SaveCollapsed(_collapsed);
+                RebuildBodyOnly();
+            });
+            body.Add(header);
+
+            var content = MakeElement("vfx-allsection-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            buildContent(content);
+            body.Add(content);
+        }
+
+        // ------------------------------------------------------------------ renderer tab
+
+        // The VisualEffect renders through a sibling VFXRenderer component; its settings
+        // (Probes, Rendering Layer Mask, Priority, Sorting) are what the stock VFX inspector
+        // exposes under "Renderer". Built as UIToolkit rows (no IMGUI) sharing the property
+        // tab's row chrome, so the look + favorite/reset/modified affordances are unified.
+        // Multi-edit: all selected instances' renderers bind to one SerializedObject (writes
+        // apply to every instance). The two controls without a stock UIToolkit field —
+        // Rendering Layer Mask and Sorting Layer — are built from public SRP/SortingLayer
+        // APIs (so they stay correct under HDRP and URP).
+
+        // Rows built this populate, so a value/undo change can re-evaluate the modified marker.
+        List<(VisualElement row, RField field)> _rendererRows;
+        // Duration rows built this populate (favorites copy + section copy), kept in sync on edit.
+        readonly List<(VisualElement row, FloatField field)> _durationRows = new List<(VisualElement, FloatField)>();
+
+        // One renderer setting: rail section, label, favorite key, availability (SRP /
+        // current-value gates), modified-vs-default test, reset, and a UIToolkit control
+        // factory. Built fresh each populate so the closures capture the live SerializedObject.
+        sealed class RField
+        {
+            public string Label;
+            public string Section;     // "probes" | "additional"
+            public string FavKey;      // "renderer:<m_Field>"
+            public bool Available;
+            public Func<bool> IsModified;
+            public Action Reset;
+            public Func<VisualElement> BuildControl;
+        }
+
+        // Field defaults = the values on a freshly-created VFX component. Snapshotted once per
+        // domain from a throwaway hidden GameObject, so "modified" means "differs from a new
+        // component" exactly as the user expects.
+        struct RendererDefaults
+        {
+            public int reflectionProbeUsage, lightProbeUsage, rendererPriority, sortingOrder, sortingLayerID;
+            public uint renderingLayerMask;
+        }
+        static RendererDefaults? s_rendererDefaults;
+
+        RendererDefaults GetRendererDefaults()
+        {
+            if (s_rendererDefaults.HasValue) return s_rendererDefaults.Value;
+            var d = new RendererDefaults();
+            var go = EditorUtility.CreateGameObjectWithHideFlags("__VFXControlDefaults", HideFlags.HideAndDontSave, typeof(VisualEffect));
+            try
+            {
+                var r = go.GetComponent<VFXRenderer>(); // auto-added by VisualEffect's RequireComponent
+                if (r != null)
+                {
+                    var so = new SerializedObject(r);
+                    d.reflectionProbeUsage = so.FindProperty("m_ReflectionProbeUsage")?.intValue ?? 0;
+                    d.lightProbeUsage = so.FindProperty("m_LightProbeUsage")?.intValue ?? 0;
+                    d.rendererPriority = so.FindProperty("m_RendererPriority")?.intValue ?? 0;
+                    d.sortingOrder = so.FindProperty("m_SortingOrder")?.intValue ?? 0;
+                    d.sortingLayerID = so.FindProperty("m_SortingLayerID")?.intValue ?? 0;
+                    d.renderingLayerMask = r.renderingLayerMask;
+                }
+            }
+            finally { Object.DestroyImmediate(go); }
+            s_rendererDefaults = d;
+            return d;
+        }
+
+        VFXRenderer[] GetRenderers() => _effects
+            .Where(ve => ve != null)
+            .Select(ve => ve.GetComponent<VFXRenderer>())
+            .Where(r => r != null)
+            .ToArray();
+
+        static bool RendererPropModified(SerializedProperty p, int def) =>
+            p != null && (p.hasMultipleDifferentValues || p.intValue != def);
+
+        void BuildRendererTab(VisualElement body)
+        {
+            var renderers = GetRenderers();
+            if (renderers.Length == 0)
+            {
+                BuildPlaceholder(body, "This Visual Effect has no renderer component to configure.");
+                return;
+            }
+
+            // One SerializedObject over every selected renderer (writes apply to all); it lives
+            // for the lifetime of the rows that bind to it (a fresh one each populate).
+            var so = new SerializedObject(renderers.Cast<Object>().ToArray());
+            var fields = BuildRendererFields(so, renderers, GetRendererDefaults());
+            _rendererRows = new List<(VisualElement, RField)>();
+            AddFavoriteGroup(body, includeProps: false, RendererFavoriteSettings(so, fields)); // favorited renderer rows share `so`
+            body.Add(BuildRendererSections(so, fields));
+        }
+
+        // The Probes/Additional section groups for a given renderer SO+fields, as a host element
+        // (so the All tab can share one SO between the pinned group and these sections). Caller
+        // resets _rendererRows first; rows accumulate into it for live marker refresh.
+        VisualElement BuildRendererSections(SerializedObject so, List<RField> fields)
+        {
+            string section = CurrentSection();
+            bool InSection(string id) => section == "all" || section == id;
+            bool Show(RField f) => f.Available && InSection(f.Section) && SearchMatches(f.Label) && ChipOk(f);
+
+            var host = MakeElement("vfx-renderer-host");
+            int shown = 0;
+            shown += AddRendererSection(host, so, "probes", "Probes", fields, Show);
+            shown += AddRendererSection(host, so, "additional", "Additional Settings", fields, Show);
+
+            if (shown == 0)
+            {
+                var empty = new Label(
+                    !string.IsNullOrEmpty(_search.Trim()) ? $"No renderer settings match “{_search}”."
+                    : _filter == "fav" ? "No favorite renderer settings."
+                    : _filter == "mod" ? "No modified renderer settings."
+                    : "No renderer settings available.");
+                empty.AddToClassList("vfx-empty");
+                host.Add(empty);
+            }
+            else
+            {
+                // keep the modified markers + chip/footer counts live as values (or undo) change.
+                // Registered on `host` so it's discarded when the body is repopulated (no leak).
+                host.TrackSerializedObjectValue(so, _ => RefreshRendererState());
+            }
+            return host;
+        }
+
+        // Favorited (and available) renderer fields as Settings, sharing the caller's SO.
+        List<Setting> RendererFavoriteSettings(SerializedObject so, List<RField> fields)
+        {
+            var list = new List<Setting>();
+            if (fields == null) return list;
+            foreach (var f in fields)
+                if (f.Available && IsFav(f.FavKey))
+                    list.Add(new Setting { FavKey = f.FavKey, BuildRow = () => BuildRendererRow(f, so) });
+            return list;
+        }
+
+        // A collapsible section group (Probes / Additional Settings) styled like a category
+        // group, containing the visible renderer rows. Returns the number of rows shown.
+        int AddRendererSection(VisualElement host, SerializedObject so, string id, string title, List<RField> fields, Func<RField, bool> show)
+        {
+            var visible = fields.Where(f => f.Section == id && show(f)).ToList();
+            if (visible.Count == 0) return 0;
+
+            string key = "render:" + id;
+            bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
+            bool open = forceOpen || !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label(title);
+            titleLbl.AddToClassList("vfx-group-title");
+            header.Add(titleLbl);
+            var count = new Label(visible.Count.ToString());
+            count.AddToClassList("vfx-group-count");
+            header.Add(count);
+            if (!forceOpen)
+            {
+                header.tooltip = "Click to expand/collapse";
+                header.RegisterCallback<ClickEvent>(e =>
+                {
+                    if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                    _state.SaveCollapsed(_collapsed);
+                    RebuildBodyOnly();
+                });
+            }
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            foreach (var f in visible) content.Add(BuildRendererRow(f, so));
+            group.Add(content);
+            host.Add(group);
+            return visible.Count;
+        }
+
+        // A renderer setting as a property-style row: label column, control, hover ↺/★ tools,
+        // modified marker. Reset/pin rebuild the body (re-reading the unbound mask/sorting fields).
+        VisualElement BuildRendererRow(RField f, SerializedObject so)
+        {
+            var row = MakeElement("vfx-row");
+            row.EnableInClassList("vfx-row--modified", f.IsModified());
+            if (IsFav(f.FavKey)) row.AddToClassList("vfx-row--fav");
+
+            var labelCol = MakeElement("vfx-label-col");
+            var label = new Label(f.Label) { tooltip = f.Label };
+            label.AddToClassList("vfx-plabel");
+            labelCol.Add(label);
+            row.Add(labelCol);
+
+            row.Add(MakeElement("vfx-row-lock")); // align with property rows' lock gutter
+
+            var control = f.BuildControl();
+            control.AddToClassList("vfx-pcontrol");
+            AttachLabelDragger(label, control); // scrub Priority/Order by dragging the label (no-op for non-numeric)
+            row.Add(control);
+
+            var tools = MakeElement("vfx-row-tools");
+            var reset = MakeIconButton("↺", "Reset to default", () =>
+            {
+                f.Reset();
+                so.ApplyModifiedProperties();
+                RebuildBodyOnly();
+            });
+            reset.AddToClassList("vfx-tool-reset");
+            tools.Add(reset);
+            var star = MakeIconButton(IsFav(f.FavKey) ? "★" : "☆", IsFav(f.FavKey) ? "Unpin" : "Pin", () => ToggleFav(f.FavKey));
+            star.AddToClassList("vfx-tool-fav");
+            tools.Add(star);
+            row.Add(tools);
+
+            _rendererRows.Add((row, f));
+            return row;
+        }
+
+        // Re-evaluate modified markers + chrome counts after a renderer value/undo change.
+        void RefreshRendererState()
+        {
+            if (_rendererRows != null)
+                foreach (var (row, f) in _rendererRows)
+                    row.EnableInClassList("vfx-row--modified", f.IsModified());
+            PopulateChips();
+            UpdateFooter();
+        }
+
+        // Rebuild the active tab body on the next tick (used when a value change toggles which
+        // other rows are available, e.g. probe usage → Anchor/Proxy visibility).
+        void DeferRebuildBody() => rootVisualElement.schedule.Execute(RebuildBodyOnly);
+
+        // EnumField over an int-backed serialized property (m_*ProbeUsage). Manual write
+        // (intValue + Apply) because BindProperty(EnumField) doesn't persist an int property.
+        VisualElement MakeRendererEnum<T>(SerializedProperty prop, SerializedObject so, bool rebuildOnChange = false)
+            where T : struct, Enum
+        {
+            var field = new EnumField((Enum)Enum.ToObject(typeof(T), prop.intValue));
+            field.showMixedValue = prop.hasMultipleDifferentValues;
+            field.RegisterValueChangedCallback(e =>
+            {
+                prop.intValue = Convert.ToInt32(e.newValue);
+                so.ApplyModifiedProperties();
+                if (rebuildOnChange) DeferRebuildBody(); // conditional rows (Anchor/Proxy) may change
+                else RefreshRendererState();
+            });
+            return field;
+        }
+
+        // ---- the two controls with no stock UIToolkit field, built from public SRP APIs ----
+
+        // Written through the serialized property (not the renderer's C# setter) so it shares
+        // the one ApplyModifiedProperties with the other fields — mixing direct writes with an
+        // open SerializedObject lets Apply clobber them (caused "Reset tab" to need two clicks).
+        VisualElement MakeRenderingLayerMaskField(SerializedObject so)
+        {
+            var names = RenderingLayerMask.GetDefinedRenderingLayerNames();
+            var values = RenderingLayerMask.GetDefinedRenderingLayerValues();
+            var maskProp = so.FindProperty("m_RenderingLayerMask");
+            uint current = maskProp != null ? maskProp.uintValue : 0u;
+
+            int bits = 0;
+            for (int i = 0; i < values.Length; i++)
+                if (((uint)values[i]) != 0 && (current & (uint)values[i]) == (uint)values[i]) bits |= 1 << i;
+
+            var field = new MaskField(names.ToList(), bits);
+            field.showMixedValue = maskProp != null && maskProp.hasMultipleDifferentValues;
+            field.RegisterValueChangedCallback(e =>
+            {
+                if (maskProp == null) return;
+                uint mask = 0;
+                for (int i = 0; i < values.Length; i++)
+                    if ((e.newValue & (1 << i)) != 0) mask |= (uint)values[i];
+                maskProp.uintValue = mask;
+                so.ApplyModifiedProperties();
+                RefreshRendererState();
+            });
+            return field;
+        }
+
+        const string kAddSortingLayer = "Add Sorting Layer…";
+
+        VisualElement MakeSortingLayerPopup(SerializedProperty layerIdProp, SerializedObject so)
+        {
+            var layers = SortingLayer.layers;
+            var names = layers.Select(l => l.name).ToList();
+            names.Add(kAddSortingLayer); // trailing entry opens Project Settings ▸ Tags and Layers
+
+            int idx = System.Array.FindIndex(layers, l => l.id == layerIdProp.intValue);
+            if (idx < 0) idx = 0;
+            string currentName = layers.Length > 0 ? layers[Mathf.Clamp(idx, 0, layers.Length - 1)].name : "";
+
+            var field = new PopupField<string>(names, idx);
+            field.showMixedValue = layerIdProp.hasMultipleDifferentValues;
+            field.RegisterValueChangedCallback(e =>
+            {
+                if (e.newValue == kAddSortingLayer)
+                {
+                    field.SetValueWithoutNotify(currentName); // revert the synthetic entry
+                    SettingsService.OpenProjectSettings("Project/Tags and Layers");
+                    return;
+                }
+                int i = names.IndexOf(e.newValue);
+                if (i < 0 || i >= layers.Length) return;
+                layerIdProp.intValue = layers[i].id;
+                so.ApplyModifiedProperties();
+                RefreshRendererState();
+            });
+            return field;
+        }
+
+        // The renderer settings as RField descriptors. Availability mirrors the stock VFX
+        // inspector's SRP/usage gates; modified/reset compare against the fresh-create defaults.
+        List<RField> BuildRendererFields(SerializedObject so, VFXRenderer[] renderers, RendererDefaults d)
+        {
+            var reflectionProbeUsage = so.FindProperty("m_ReflectionProbeUsage");
+            var lightProbeUsage = so.FindProperty("m_LightProbeUsage");
+            var lightProbeVolumeOverride = so.FindProperty("m_LightProbeVolumeOverride");
+            var probeAnchor = so.FindProperty("m_ProbeAnchor");
+            var renderingLayerMask = so.FindProperty("m_RenderingLayerMask");
+            var rendererPriority = so.FindProperty("m_RendererPriority");
+            var sortingOrder = so.FindProperty("m_SortingOrder");
+            var sortingLayerID = so.FindProperty("m_SortingLayerID");
+
+            bool showReflectionProbe = reflectionProbeUsage != null && SupportedRenderingFeatures.active.reflectionProbes;
+            var srpType = GraphicsSettings.currentRenderPipelineAssetType;
+            if (srpType != null && srpType.ToString().Contains("UniversalRenderPipeline"))
+                showReflectionProbe = reflectionProbeUsage != null; // URP hides it in stock Renderers but VFX keeps it reachable
+
+            bool reflectionOn = reflectionProbeUsage != null && !reflectionProbeUsage.hasMultipleDifferentValues &&
+                                (ReflectionProbeUsage)reflectionProbeUsage.intValue != ReflectionProbeUsage.Off;
+            bool lightOn = lightProbeUsage != null && !lightProbeUsage.hasMultipleDifferentValues &&
+                           (LightProbeUsage)lightProbeUsage.intValue != LightProbeUsage.Off;
+#pragma warning disable CS0618 // UseProxyVolume is obsolete in some configs but still the serialized enum value
+            bool proxyOn = lightProbeUsage != null && !lightProbeUsage.hasMultipleDifferentValues &&
+                           lightProbeUsage.intValue == (int)LightProbeUsage.UseProxyVolume;
+#pragma warning restore CS0618
+
+            return new List<RField>
+            {
+                new RField
+                {
+                    Label = "Reflection Probes", Section = "probes", FavKey = "renderer:m_ReflectionProbeUsage",
+                    Available = showReflectionProbe,
+                    IsModified = () => RendererPropModified(reflectionProbeUsage, d.reflectionProbeUsage),
+                    Reset = () => { if (reflectionProbeUsage != null) reflectionProbeUsage.intValue = d.reflectionProbeUsage; },
+                    // m_ReflectionProbeUsage is serialized as a plain int (the stock editor writes
+                    // intValue), so BindProperty(EnumField) wouldn't persist — write it manually.
+                    BuildControl = () => MakeRendererEnum<ReflectionProbeUsage>(reflectionProbeUsage, so, rebuildOnChange: true),
+                },
+                new RField
+                {
+                    Label = "Light Probes", Section = "probes", FavKey = "renderer:m_LightProbeUsage",
+                    Available = lightProbeUsage != null,
+                    IsModified = () => RendererPropModified(lightProbeUsage, d.lightProbeUsage),
+                    Reset = () => { if (lightProbeUsage != null) lightProbeUsage.intValue = d.lightProbeUsage; },
+                    // rebuild on change so Proxy Volume Override / Anchor Override appear/disappear
+                    BuildControl = () => MakeRendererEnum<LightProbeUsage>(lightProbeUsage, so, rebuildOnChange: true),
+                },
+                new RField
+                {
+                    Label = "Proxy Volume Override", Section = "probes", FavKey = "renderer:m_LightProbeVolumeOverride",
+                    Available = proxyOn,
+                    IsModified = () => lightProbeVolumeOverride != null && (lightProbeVolumeOverride.hasMultipleDifferentValues || lightProbeVolumeOverride.objectReferenceValue != null),
+                    Reset = () => { if (lightProbeVolumeOverride != null) lightProbeVolumeOverride.objectReferenceValue = null; },
+                    BuildControl = () =>
+                    {
+#pragma warning disable CS0618 // LightProbeProxyVolume deprecated with the Built-In RP, but still the field's type
+                        var f = new ObjectField { objectType = typeof(LightProbeProxyVolume), allowSceneObjects = true };
+#pragma warning restore CS0618
+                        f.BindProperty(lightProbeVolumeOverride);
+                        return f;
+                    },
+                },
+                new RField
+                {
+                    Label = "Anchor Override", Section = "probes", FavKey = "renderer:m_ProbeAnchor",
+                    Available = (reflectionOn || lightOn) && probeAnchor != null,
+                    IsModified = () => probeAnchor != null && (probeAnchor.hasMultipleDifferentValues || probeAnchor.objectReferenceValue != null),
+                    Reset = () => { if (probeAnchor != null) probeAnchor.objectReferenceValue = null; },
+                    BuildControl = () =>
+                    {
+                        var f = new ObjectField { objectType = typeof(Transform), allowSceneObjects = true };
+                        f.BindProperty(probeAnchor);
+                        return f;
+                    },
+                },
+                new RField
+                {
+                    Label = "Rendering Layer Mask", Section = "additional", FavKey = "renderer:m_RenderingLayerMask",
+                    Available = renderingLayerMask != null && GraphicsSettings.isScriptableRenderPipelineEnabled,
+                    IsModified = () => renderingLayerMask != null && (renderingLayerMask.hasMultipleDifferentValues || renderingLayerMask.uintValue != d.renderingLayerMask),
+                    Reset = () => { if (renderingLayerMask != null) renderingLayerMask.uintValue = d.renderingLayerMask; },
+                    BuildControl = () => MakeRenderingLayerMaskField(so),
+                },
+                new RField
+                {
+                    Label = "Priority", Section = "additional", FavKey = "renderer:m_RendererPriority",
+                    Available = rendererPriority != null && SupportedRenderingFeatures.active.rendererPriority,
+                    IsModified = () => RendererPropModified(rendererPriority, d.rendererPriority),
+                    Reset = () => { if (rendererPriority != null) rendererPriority.intValue = d.rendererPriority; },
+                    BuildControl = () => { var f = new IntegerField(); f.BindProperty(rendererPriority); return f; },
+                },
+                new RField
+                {
+                    Label = "Sorting Layer", Section = "additional", FavKey = "renderer:m_SortingLayerID",
+                    Available = sortingLayerID != null && sortingOrder != null,
+                    IsModified = () => RendererPropModified(sortingLayerID, d.sortingLayerID),
+                    Reset = () => { if (sortingLayerID != null) sortingLayerID.intValue = d.sortingLayerID; },
+                    BuildControl = () => MakeSortingLayerPopup(sortingLayerID, so),
+                },
+                new RField
+                {
+                    Label = "Order in Layer", Section = "additional", FavKey = "renderer:m_SortingOrder",
+                    Available = sortingLayerID != null && sortingOrder != null,
+                    IsModified = () => RendererPropModified(sortingOrder, d.sortingOrder),
+                    Reset = () => { if (sortingOrder != null) sortingOrder.intValue = d.sortingOrder; },
+                    BuildControl = () => { var f = new IntegerField(); f.BindProperty(sortingOrder); return f; },
+                },
+            };
+        }
+
+        // Does an RField pass the active filter chip? (mirrors Visible's fav/mod logic)
+        bool ChipOk(RField f) =>
+            _filter == "all" ||
+            (_filter == "fav" && IsFav(f.FavKey)) ||
+            (_filter == "mod" && f.IsModified());
+
+        // (leaf, fav, mod) counts for the renderer tab's filter chips.
+        (int leaf, int fav, int mod) RendererChipCounts()
+        {
+            var renderers = GetRenderers();
+            if (renderers.Length == 0) return (0, 0, 0);
+            var so = new SerializedObject(renderers.Cast<Object>().ToArray());
+            so.Update();
+            var fields = BuildRendererFields(so, renderers, GetRendererDefaults());
+            int leaf = fields.Count(f => f.Available);
+            int fav = fields.Count(f => f.Available && IsFav(f.FavKey));
+            int mod = fields.Count(f => f.Available && f.IsModified());
+            return (leaf, fav, mod);
+        }
+
+        // Reset every modified renderer field on the selected instances to the fresh-create default.
+        void ResetRendererToDefaults()
+        {
+            var renderers = GetRenderers();
+            if (renderers.Length == 0) return;
+            var so = new SerializedObject(renderers.Cast<Object>().ToArray());
+            so.Update();
+            foreach (var f in BuildRendererFields(so, renderers, GetRendererDefaults()))
+                if (f.Available && f.IsModified()) f.Reset();
+            so.ApplyModifiedProperties();
         }
 
         string EmptyMessage()
         {
             if (_filter == "mod") return "Nothing edited yet — all properties match the graph defaults.";
-            if (_filter == "fav") return "No pinned properties. Hover a row and tap ★ to pin it here.";
+            if (_filter == "fav") return "No favorite properties. Hover a row and tap ★ to add one.";
             if (!string.IsNullOrEmpty(_search.Trim())) return $"No properties match “{_search}”.";
             return "No properties exposed in this Visual Effect Graph.";
         }
@@ -726,8 +1441,9 @@ namespace VfxControl.EditorTools
                 !p.Name.ToLowerInvariant().Contains(q) &&
                 !(p.Label != null && p.Label.ToLowerInvariant().Contains(q)))
                 return false;
-            if (_category != "all" && CategoryOf(p) != _category) return false;
-            if (_filter == "fav" && !_favorites.Contains(p.Name)) return false;
+            string section = CurrentSection();
+            if (section != "all" && CategoryOf(p) != section) return false;
+            if (_filter == "fav" && !IsFav(FavKeyOf(p))) return false;
             if (_filter == "mod" && !VfxPropertySheet.IsOverridden(_so, p)) return false;
             return true;
         }
@@ -744,7 +1460,10 @@ namespace VfxControl.EditorTools
             return chip;
         }
 
-        VisualElement BuildCategoryRail()
+        // The active tab's section rail: an "All" button plus the tab's declared sections
+        // (categories for Properties, Probes/Additional for Renderer, …). Selection is
+        // per-tab (CurrentSection / SetSection).
+        VisualElement BuildRail(TabDef def)
         {
             var rail = new ScrollView(ScrollViewMode.Horizontal);
             rail.AddToClassList("vfx-hrail");
@@ -752,15 +1471,8 @@ namespace VfxControl.EditorTools
             rail.verticalScrollerVisibility = ScrollerVisibility.Hidden;
 
             rail.Add(MakeRailButton("all", "All", default, true));
-
-            var cats = new List<string>();
-            foreach (var p in _params)
-            {
-                var cat = string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category;
-                if (!cats.Contains(cat)) cats.Add(cat);
-            }
-            foreach (var cat in cats)
-                rail.Add(MakeRailButton(cat, cat, GetCategoryColor(cat), false));
+            foreach (var s in def.Sections())
+                rail.Add(MakeRailButton(s.Id, s.Label, s.Dot, !s.HasDot));
 
             // vertical wheel scrolls horizontally when overflowing
             rail.RegisterCallback<WheelEvent>(e =>
@@ -779,12 +1491,11 @@ namespace VfxControl.EditorTools
         {
             var btn = new Button(() =>
             {
-                _category = (_category == id) ? "all" : id;
-                _state.Category = _category;
-                RebuildBodyOnly();
+                SetSection(id);
+                PopulateActiveTab();
             });
             btn.AddToClassList("vfx-hrail-btn");
-            if (_category == id) btn.AddToClassList("vfx-hrail-btn--active");
+            if (CurrentSection() == id) btn.AddToClassList("vfx-hrail-btn--active");
             // dot + label as flex children so the dot sits to the left of the label
             // (the Button's intrinsic text isn't a flex item and would overlap).
             if (!isAll)
@@ -797,42 +1508,74 @@ namespace VfxControl.EditorTools
             return btn;
         }
 
-        VisualElement BuildPinnedTray()
+        // A favorite-able setting from any source (property, renderer, …) that knows how to
+        // render its own row. Lets the Favorites group mix sources uniformly (the All tab).
+        sealed class Setting
         {
-            var fav = _params.Where(p => _favorites.Contains(p.Name)).ToList();
-            var foldout = new Foldout { text = $"  ★ Pinned ({fav.Count})", value = true };
-            foldout.AddToClassList("vfx-pinned");
+            public string FavKey;
+            public Func<VisualElement> BuildRow;
+        }
 
-            var grid = MakeElement("vfx-pinned-grid");
-            foreach (var p in fav)
+        // Prepend a "Favorites" group to a tab body — but only when not already narrowing via the
+        // rail section, a chip, or search (those isolate favorites themselves). `includeProps`
+        // adds the property favorites (struct-aware); `rendererFavs` adds renderer rows.
+        void AddFavoriteGroup(VisualElement body, bool includeProps, List<Setting> rendererFavs)
+        {
+            if (CurrentSection() != "all" || _filter != "all" || !string.IsNullOrEmpty(_search.Trim()))
+                return;
+
+            // property favorites keep their struct headers (label + space + Edit-Gizmo)
+            if (includeProps) BuildStructLeavesMap(); // AddDisplayEntries needs the struct maps
+            var propDisplay = includeProps ? ComputeFavoriteDisplay() : null;
+            int propLeaves = propDisplay?.Count(e => !e.IsStruct) ?? 0;
+            int total = propLeaves + (rendererFavs?.Count ?? 0);
+            if (total == 0) return;
+
+            body.Add(BuildFavoriteGroup(propDisplay, rendererFavs, total));
+        }
+
+        // Quick-access "Favorites" group: a collapsible header styled like a category. Property
+        // favorites render through the same struct-aware path as categories (so a pinned Box
+        // shows its header + Edit-Gizmo); renderer favorites render as rows.
+        VisualElement BuildFavoriteGroup(List<VfxExposedParam> propDisplay, List<Setting> rendererFavs, int count)
+        {
+            const string key = "Favorites"; // collapse state lives in _collapsed like a category
+            bool open = !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            group.AddToClassList("vfx-pinned-group");
+
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var star = new Label("★") { pickingMode = PickingMode.Ignore };
+            star.AddToClassList("vfx-group-star");
+            header.Add(star);
+            var title = new Label("Favorites");
+            title.AddToClassList("vfx-group-title");
+            header.Add(title);
+            var countLabel = new Label(count.ToString());
+            countLabel.AddToClassList("vfx-group-count");
+            header.Add(countLabel);
+            header.tooltip = "Click to expand/collapse";
+            header.RegisterCallback<ClickEvent>(e =>
             {
-                var card = MakeElement("vfx-pincard");
-                UpdateRowModifiedClass(card, p); // reuses the modified marker for reset visibility
-                var top = MakeElement("vfx-pincard-top");
-                var dot = MakeElement("vfx-pincard-dot");
-                dot.style.backgroundColor = GetCategoryColor(string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category);
-                top.Add(dot);
-                var lbl = new Label(p.Label) { tooltip = p.Tooltip };
-                lbl.AddToClassList("vfx-pincard-label");
-                AddCopyPasteMenu(lbl, p);
-                top.Add(lbl);
-                var reset = MakeIconButton("↺", "Reset to graph default", () =>
-                {
-                    ResetAll(p);
-                    RebuildBodyOnly();
-                });
-                reset.AddToClassList("vfx-tool-reset"); // hover/modified-gated via CSS
-                top.Add(reset);
-                var unpin = MakeIconButton("★", "Unpin", () => ToggleFavorite(p));
-                top.Add(unpin);
-                card.Add(top);
-                var control = BuildControl(p, card); // pass the card so its modified marker stays in sync
-                AttachLabelDragger(lbl, control); // drag the card label to scrub numeric values
-                card.Add(control);
-                grid.Add(card);
-            }
-            foldout.Add(grid);
-            return foldout;
+                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                _state.SaveCollapsed(_collapsed);
+                RebuildBodyOnly();
+            });
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            if (propDisplay != null && propDisplay.Count > 0)
+                AddDisplayEntries(content, propDisplay, forceOpen: false); // structs keep their headers/gizmo
+            if (rendererFavs != null)
+                foreach (var s in rendererFavs) content.Add(s.BuildRow());
+            group.Add(content);
+
+            return group;
         }
 
         VisualElement BuildGroup(string category, List<VfxExposedParam> props, bool forceOpen, VfxExposedParam gate = null)
@@ -1022,7 +1765,7 @@ namespace VfxControl.EditorTools
             var header = MakeElement("vfx-row");
             header.AddToClassList("vfx-struct-row");
             header.EnableInClassList("vfx-row--modified", leaves.Any(c => VfxPropertySheet.IsOverridden(_so, c)));
-            if (leaves.Any(c => _favorites.Contains(c.Name))) header.AddToClassList("vfx-row--fav");
+            if (leaves.Any(c => IsFav(FavKeyOf(c)))) header.AddToClassList("vfx-row--fav");
             _structHeaders.Add((header, leaves)); // so a child edit re-bolds this header live
 
             // clickable label area toggles collapse; tools sit outside it. The twirl
@@ -1077,11 +1820,11 @@ namespace VfxControl.EditorTools
             resetAll.AddToClassList("vfx-tool-reset");
             tools.Add(resetAll);
 
-            bool allFav = leaves.Count > 0 && leaves.All(c => _favorites.Contains(c.Name));
+            bool allFav = leaves.Count > 0 && leaves.All(c => IsFav(FavKeyOf(c)));
             var starAll = MakeIconButton(allFav ? "★" : "☆", allFav ? "Unpin all components" : "Pin all components", () =>
             {
                 foreach (var c in leaves)
-                    if (allFav) _favorites.Remove(c.Name); else _favorites.Add(c.Name);
+                    if (allFav) _favorites.Remove(FavKeyOf(c)); else _favorites.Add(FavKeyOf(c));
                 _state.SaveFavorites(_favorites);
                 RebuildBodyOnly();
             });
@@ -1097,7 +1840,7 @@ namespace VfxControl.EditorTools
             var row = MakeElement("vfx-row");
             row.userData = p;
             row.EnableInClassList("vfx-row--modified", comps.Any(c => VfxPropertySheet.IsOverridden(_so, c)));
-            if (comps.Any(c => _favorites.Contains(c.Name))) row.AddToClassList("vfx-row--fav");
+            if (comps.Any(c => IsFav(FavKeyOf(c)))) row.AddToClassList("vfx-row--fav");
             _structHeaders.Add((row, comps)); // live bold/reset aggregation on edit
 
             var labelCol = MakeElement("vfx-label-col");
@@ -1135,7 +1878,7 @@ namespace VfxControl.EditorTools
             var row = MakeElement("vfx-row");
             row.userData = p;
             UpdateRowModifiedClass(row, p);
-            if (_favorites.Contains(p.Name)) row.AddToClassList("vfx-row--fav");
+            if (IsFav(FavKeyOf(p))) row.AddToClassList("vfx-row--fav");
 
             // label column (fixed width): the label text + (optional) space icon hug
             // the left, so the space sits right after the label with a gap before the
@@ -1170,7 +1913,7 @@ namespace VfxControl.EditorTools
             });
             reset.AddToClassList("vfx-tool-reset"); // visibility + dim driven by CSS (modified state)
             tools.Add(reset);
-            var star = MakeIconButton(_favorites.Contains(p.Name) ? "★" : "☆", "Pin to favorites", () => ToggleFavorite(p));
+            var star = MakeIconButton(IsFav(FavKeyOf(p)) ? "★" : "☆", "Pin to favorites", () => ToggleFavorite(p));
             star.AddToClassList("vfx-tool-fav"); // shown on hover or when pinned
             tools.Add(star);
             row.Add(tools);
@@ -1505,13 +2248,8 @@ namespace VfxControl.EditorTools
             _footNote.AddToClassList("vfx-foot-note");
             footer.Add(_footNote);
 
-            _resetAllBtn = new Button(() =>
-            {
-                foreach (var p in _params)
-                    if (VfxPropertySheet.IsOverridden(_so, p))
-                        ResetAll(p);
-                RebuildBodyOnly();
-            }) { text = "Reset all" };
+            _resetAllBtn = new Button(ResetActiveTab) { text = "Reset tab" };
+            _resetAllBtn.tooltip = "Reset every modified setting on the active tab to its default.";
             _resetAllBtn.AddToClassList("vfx-btn");
             footer.Add(_resetAllBtn);
 
@@ -1525,10 +2263,54 @@ namespace VfxControl.EditorTools
             return footer;
         }
 
+        // The play/scrub timeline window default (the value a freshly-set-up tool uses).
+        const float kDefaultDuration = 10f;
+        bool PlaybackModified() => !Mathf.Approximately(_duration, kDefaultDuration);
+
+        // Modified count for the active tab — drives the footer note + Reset button enabled state.
+        int ActiveTabModifiedCount()
+        {
+            switch (_tab)
+            {
+                case "props": return VfxPropertySheet.CountModified(_so, _params);
+                case "render": return RendererChipCounts().mod;
+                case "play": return PlaybackModified() ? 1 : 0;
+                case "all": return VfxPropertySheet.CountModified(_so, _params) + RendererChipCounts().mod + (PlaybackModified() ? 1 : 0);
+                default: return 0; // debug has no resettable settings yet
+            }
+        }
+
+        // Reset only the active tab's modified settings (All resets every source).
+        void ResetActiveTab()
+        {
+            switch (_tab)
+            {
+                case "props": ResetAllProperties(); break;
+                case "render": ResetRendererToDefaults(); break;
+                case "play": ResetPlayback(); break;
+                case "all": ResetAllProperties(); ResetRendererToDefaults(); ResetPlayback(); break;
+            }
+            RebuildBodyOnly();
+        }
+
+        void ResetAllProperties()
+        {
+            foreach (var p in _params)
+                if (VfxPropertySheet.IsOverridden(_so, p))
+                    ResetAll(p);
+        }
+
+        void ResetPlayback()
+        {
+            _duration = kDefaultDuration;
+            VfxControlState.SetTimelineDuration(_duration);
+            UpdateLive();
+        }
+
         void UpdateFooter()
         {
             if (_footNote == null || _so == null) return;
-            int mod = VfxPropertySheet.CountModified(_so, _params);
+            int mod = ActiveTabModifiedCount();
             uint seed = _effect != null ? _effect.startSeed : 0;
             _footNote.text = (mod > 0 ? $"{mod} edited" : "No overrides") + $" · seed {seed}";
             _resetAllBtn?.SetEnabled(mod > 0);
@@ -1536,13 +2318,36 @@ namespace VfxControl.EditorTools
 
         // ------------------------------------------------------------------ helpers
 
-        void RebuildBodyOnly() => Rebuild(); // simple + robust; preserves no transient focus
+        // Repopulate tabs/chips/rail/body for the current state, keeping the chrome (and the
+        // focused search field) intact. Used by chips, rail, favorites, reset, collapse, etc.
+        void RebuildBodyOnly() => PopulateActiveTab();
 
-        void ToggleFavorite(VfxExposedParam p)
+        // Favorites are namespaced so properties, renderer fields, and meta can coexist in
+        // one set: "prop:<name>", "renderer:<m_Field>", "meta:<id>", "play:<id>".
+        static string FavKeyOf(VfxExposedParam p) => "prop:" + p.Name;
+        bool IsFav(string key) => _favorites.Contains(key);
+
+        void ToggleFav(string key)
         {
-            if (!_favorites.Remove(p.Name)) _favorites.Add(p.Name);
+            if (!_favorites.Remove(key)) _favorites.Add(key);
             _state.SaveFavorites(_favorites);
             RebuildBodyOnly();
+        }
+
+        void ToggleFavorite(VfxExposedParam p) => ToggleFav(FavKeyOf(p));
+
+        // One-time upgrade of pre-Phase-2 favorites (bare property names) to the "prop:" namespace.
+        void MigrateFavorites()
+        {
+            bool changed = false;
+            var migrated = new HashSet<string>();
+            foreach (var k in _favorites)
+            {
+                if (k.StartsWith("prop:") || k.StartsWith("renderer:") || k.StartsWith("meta:") || k.StartsWith("play:"))
+                    migrated.Add(k);
+                else { migrated.Add("prop:" + k); changed = true; }
+            }
+            if (changed) { _favorites = migrated; _state.SaveFavorites(_favorites); }
         }
 
         // ~30fps clock: advances the scrub bar in real time while playing, looping

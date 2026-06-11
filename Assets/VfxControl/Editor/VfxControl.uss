@@ -260,7 +260,7 @@
     color: var(--unity-colors-default-text);
 }
 
-.vfx-rail-dot, .vfx-dot, .vfx-pincard-dot {
+.vfx-rail-dot, .vfx-dot {
     width: 7px;
     height: 7px;
     border-radius: 4px;
@@ -269,49 +269,14 @@
     align-self: center; /* vertically center the dot within its row */
 }
 
-/* ---- pinned tray ---- */
-.vfx-pinned {
-    margin: 0 8px 6px 8px;
-    padding: 6px;
-    border-radius: 3px;
-    background-color: var(--unity-colors-default-background);
-}
-
-.vfx-pinned-head {
-    flex-direction: row;
-    align-items: center;
-    color: var(--unity-colors-label-text);
-    -unity-font-style: bold;
-}
-
-.vfx-pinned-grid {
-    flex-direction: row;
-    flex-wrap: wrap;
-    margin-top: 6px;
-}
-
-.vfx-pincard {
-    width: 49%;
-    margin: 0 1% 6px 0;
-    padding: 5px 6px;
-    border-radius: 3px;
-    background-color: var(--unity-colors-window-background);
-    border-width: 1px;
-    border-color: var(--unity-colors-default-border);
-}
-
-.vfx-pincard-top {
-    flex-direction: row;
-    align-items: center;
-    margin-bottom: 3px;
-}
-
-.vfx-pincard-label {
-    flex-grow: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--unity-colors-label-text);
+/* ---- pinned group (a category-styled collapsible of favorited rows) ---- */
+.vfx-group-star {
+    width: 13px;
+    margin-right: 4px;
     font-size: 11px;
+    -unity-text-align: middle-center;
+    color: rgb(230, 184, 64); /* gold star, in the category-dot slot */
+    flex-shrink: 0;
 }
 
 /* ---- category groups (custom collapsible) ---- */
@@ -338,8 +303,8 @@
     margin-right: 2px;
 }
 .vfx-group-title {
-    -unity-font-style: bold;
-    font-size: 13px;
+    -unity-font-style: normal;
+    font-size: 12px;
     flex-grow: 1; /* push the count to the far right */
     color: var(--unity-colors-default-text);
 }
@@ -587,11 +552,6 @@
 .vfx-row--modified .vfx-tool-reset { display: flex; }
 .vfx-row--modified .vfx-tool-reset { opacity: 1; }
 
-/* same reset behavior inside a pinned card (cards aren't .vfx-row) */
-.vfx-pincard:hover .vfx-tool-reset,
-.vfx-pincard.vfx-row--modified .vfx-tool-reset { display: flex; }
-.vfx-pincard.vfx-row--modified .vfx-tool-reset { opacity: 1; }
-
 .vfx-tool-fav { opacity: 0; }
 .vfx-row:hover .vfx-tool-fav { opacity: 0.5; }   /* greyed on hover until pinned */
 .vfx-row--fav .vfx-tool-fav { opacity: 1; }       /* full when pinned */
@@ -652,4 +612,30 @@
     white-space: normal;
     -unity-text-align: middle-center;
     color: var(--unity-colors-label-text);
+}
+
+/* ---- "All" tab block headers (Properties / Renderer / Playback) ----
+   Collapsible top-level dividers: must read ABOVE the boxed category headers (12px) below them,
+   so the title is larger, brighter, letter-spaced, and set off by whitespace + a neutral rule. */
+.vfx-allsection-head {
+    flex-direction: row;
+    align-items: center;
+    margin: 18px 8px 4px 8px;
+    padding-bottom: 5px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-default-border);
+}
+.vfx-allsection-twirl {
+    width: 14px;
+    font-size: 14px;
+    -unity-text-align: middle-center;
+    color: var(--unity-colors-default-text);
+    margin-right: 2px;
+}
+.vfx-allsection-title {
+    -unity-font-style: bold;
+    font-size: 13px;
+    letter-spacing: 1px;
+    flex-grow: 1;
+    color: var(--unity-colors-default-text);
 }
