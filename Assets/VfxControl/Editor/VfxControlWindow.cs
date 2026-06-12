@@ -76,6 +76,12 @@ namespace VfxControl.EditorTools
             = new List<(string, Label, VisualElement, VisualElement, Label)>();
         // Profiler Recorders keyed by marker name (created+enabled lazily); reset on target change.
         readonly Dictionary<string, Recorder> _recorders = new Dictionary<string, Recorder>();
+        // Light EMA per marker (nanoseconds) so the µs readouts don't flicker frame-to-frame.
+        readonly Dictionary<string, double> _smoothNs = new Dictionary<string, double>();
+        const double kTimerSmooth = 0.2; // EMA weight on the newest sample (~0.2s settle at 30fps)
+        // The effect we've registered for profiling (per-system CPU/GPU markers need this); unregistered
+        // on target change / window close. Registered on-demand while Debug timing is on screen.
+        VisualEffect _profilingEffect;
         // Per-system attribute-buffer stride in 32-bit words (Σ bucket sizes); from the graph layout.
         // Computed per body build (static per asset); empty entries → "—" (layout not yet compiled).
         Dictionary<string, int> _attrWords = new Dictionary<string, int>();
@@ -91,8 +97,11 @@ namespace VfxControl.EditorTools
         }
 
         // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
-        // _tab is pinned). Serialized so a docked pop-out survives domain reload / editor restart.
-        [SerializeField] string _soloTab;
+        // _tab is pinned). Deliberately NOT [SerializeField] — a serialized solo flag bakes the lean
+        // state into the saved window layout, so a torn-off window comes back lean every session and
+        // strands the Asset field/transport. Session-only instead: a pop-out reverts to a full window
+        // after a domain reload / restart (re-tear-off if wanted).
+        string _soloTab;
         // persistent chrome containers: the search field is built ONCE (so typing never
         // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
         ToolbarSearchField _searchField;
@@ -215,6 +224,7 @@ namespace VfxControl.EditorTools
 
         void OnDisable()
         {
+            StopProfiling(); // release the VFX profiling registration we requested for timing readouts
             SavePayloads(); // OnDisable fires before a domain reload (and on close) — SessionState
                             // carries the payloads across recompiles, but drops them on editor restart.
             Undo.undoRedoPerformed -= OnUndoRedo;
@@ -336,6 +346,7 @@ namespace VfxControl.EditorTools
         {
             _gizmoStruct = null; // gizmo target is invalid for a new component
             _recorders.Clear();  // marker names embed the old effect/system — drop stale Recorders
+            _smoothNs.Clear();
             _effect = effect;
 
             _effects.Clear();
@@ -434,14 +445,17 @@ namespace VfxControl.EditorTools
             UpdateAllSos();
 
             // Pop-out (solo) windows are lean: just header + chrome + rail + the one tab's body.
-            // The Asset field and the transport bar are dropped (the transport stays the main
-            // window's job — see Tick, which doesn't advance the clock in a solo window).
-            if (_soloTab == null)
-            {
-                root.Add(BuildMetaSection());
-                root.Add(BuildMiniTransport());
-                root.Add(MakeElement("vfx-section-gap"));   // the intentional divider
-            }
+            // The Asset field + transport bar are always BUILT (so they can never be stranded out of
+            // the tree) and merely hidden in solo mode — the transport stays the main window's job
+            // (see Tick, which doesn't advance the clock in a solo window).
+            var meta = BuildMetaSection();
+            var transport = BuildMiniTransport();
+            var gap = MakeElement("vfx-section-gap");   // the intentional divider
+            var leanDisplay = _soloTab == null ? DisplayStyle.Flex : DisplayStyle.None;
+            meta.style.display = transport.style.display = gap.style.display = leanDisplay;
+            root.Add(meta);
+            root.Add(transport);
+            root.Add(gap);
 
             // Persistent chrome: search + chips ABOVE the tabs (shared across tabs), then
             // the tab strip, the per-tab section rail, and the body. Only the search field
@@ -1386,6 +1400,16 @@ namespace VfxControl.EditorTools
             efficiency < 0.91f ? Hex("#e3a98b") :
                                  Hex("#00ff47");
 
+        // Adaptive time format: ms for ≥1 ms, else microseconds (VFX per-system costs are usually a
+        // few µs, which "0.00 ms" can't show). "—" for unavailable (NaN).
+        static string FmtMs(double ms)
+        {
+            if (double.IsNaN(ms)) return "—";
+            if (ms >= 1.0) return $"{ms:0.00} ms";
+            if (ms > 0.0) return $"{ms * 1000.0:0.#} µs";
+            return "0 µs";
+        }
+
         // Live refresh, driven by the ~30fps clock in UpdateLive. Each consumer (stat grid, All-tab
         // teaser, per-system bars) is guarded on its widgets being attached, so this no-ops for
         // whichever aren't the current body.
@@ -1396,6 +1420,10 @@ namespace VfxControl.EditorTools
             bool teaserLive = _dbgTeaser?.panel != null;  // All-tab Debug shortcut is the current body
             bool rowsLive = _dbgSysRows.Count > 0 && _dbgSysRows[0].fill?.panel != null; // Systems section
             if (!gridLive && !teaserLive && !rowsLive) return;
+
+            // CPU/GPU per-system (and effect) markers are only emitted while the component is
+            // registered for profiling — do it on demand while the timing readouts are on screen.
+            if (gridLive || rowsLive) EnsureProfiling();
 
             bool gpuOk = SystemInfo.supportsGpuRecorder;
             _effect.GetParticleSystemNames(_dbgSysNames);
@@ -1450,8 +1478,8 @@ namespace VfxControl.EditorTools
             _dbgState.text = _effect.culled ? "Culled" : _effect.pause ? "Paused" : "Playing";
 
             double cpuEffMs = MarkerMs(VfxGraphReflection.CpuEffectMarker(_effect), gpu: false);
-            _dbgCpu.text = double.IsNaN(cpuEffMs) ? "—" : $"{cpuEffMs:0.00} ms";
-            _dbgGpu.text = (!gpuOk || !anyGpu) ? "—" : $"{gpuMsTotal:0.00} ms";
+            _dbgCpu.text = FmtMs(cpuEffMs);
+            _dbgGpu.text = (!gpuOk || !anyGpu) ? "—" : FmtMs(gpuMsTotal);
             _dbgAttrMem.text = anyAttr ? EditorUtility.FormatBytes(attrBytesTotal) : "—";
         }
 
@@ -1475,11 +1503,33 @@ namespace VfxControl.EditorTools
             }
 
             var parts = new List<string>();
-            if (!double.IsNaN(cpuMs)) parts.Add($"cpu {cpuMs:0.00} ms");
-            if (!double.IsNaN(gpuMs)) parts.Add($"gpu {gpuMs:0.00} ms");
+            if (!double.IsNaN(cpuMs)) parts.Add($"cpu {FmtMs(cpuMs)}");
+            if (!double.IsNaN(gpuMs)) parts.Add($"gpu {FmtMs(gpuMs)}");
             if (attrBytes >= 0) parts.Add($"mem {EditorUtility.FormatBytes(attrBytes)}");
             r.detail.text = string.Join("   ·   ", parts);
             r.detail.style.display = parts.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        // Register the current effect for profiling (idempotent; re-registers if something else
+        // unregistered it — self-heals across multiple Debug windows). Switches registration when
+        // the target changes.
+        void EnsureProfiling()
+        {
+            if (_effect == null) return;
+            if (_profilingEffect == _effect && VfxGraphReflection.IsRegisteredForProfiling(_effect)) return;
+            if (_profilingEffect != null && _profilingEffect != _effect)
+                VfxGraphReflection.UnregisterForProfiling(_profilingEffect);
+            VfxGraphReflection.RegisterForProfiling(_effect);
+            _profilingEffect = _effect;
+        }
+
+        void StopProfiling()
+        {
+            if (_profilingEffect != null)
+            {
+                VfxGraphReflection.UnregisterForProfiling(_profilingEffect);
+                _profilingEffect = null;
+            }
         }
 
         // ---- profiler Recorder helpers (CPU/GPU timing) ----
@@ -1496,13 +1546,23 @@ namespace VfxControl.EditorTools
             return r;
         }
 
-        // Milliseconds from a marker's Recorder (NaN when the marker/recorder is unavailable).
+        // Milliseconds from a marker's Recorder, lightly smoothed (NaN when unavailable).
         double MarkerMs(string marker, bool gpu)
         {
             var r = GetRecorder(marker);
             if (r == null) return double.NaN;
             long ns = gpu ? r.gpuElapsedNanoseconds : r.elapsedNanoseconds;
-            return ns * 1e-6;
+            return Smoothed(marker, ns) * 1e-6;
+        }
+
+        // Exponential moving average of a marker's nanoseconds (keyed by marker name).
+        double Smoothed(string marker, long rawNs)
+        {
+            double v = _smoothNs.TryGetValue(marker, out var prev)
+                ? prev + (rawNs - prev) * kTimerSmooth
+                : rawNs;
+            _smoothNs[marker] = v;
+            return v;
         }
 
         // Sum the GPU time of a system's tasks (marker probed by index until one comes back empty).
@@ -1515,7 +1575,7 @@ namespace VfxControl.EditorTools
                 string marker = VfxGraphReflection.GpuTaskMarker(_effect, system, t);
                 if (string.IsNullOrEmpty(marker)) break;
                 var r = GetRecorder(marker);
-                if (r != null) { sum += r.gpuElapsedNanoseconds * 1e-6; any = true; }
+                if (r != null) { sum += Smoothed(marker, r.gpuElapsedNanoseconds) * 1e-6; any = true; }
             }
             return any ? sum : double.NaN;
         }

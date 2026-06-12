@@ -115,10 +115,13 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   Properties+Renderer+Playback stacked with no rail (`BuildAllTab`). **Tab tear-off**: right-clicking
   a focused tab (not "All") → **"Open in new window"** (`ContextualMenuManipulator` → `OpenSolo`)
   spawns a second dockable `VfxControlWindow` via `CreateWindow<>` pinned to that one tab — a
-  `[SerializeField] _soloTab` (survives domain reload/restart) hides the tab strip (`PopulateTabs`
-  early-out) and forces `_tab` (clamped right after `_tab = _state.Tab` in `SetTarget`, so it follows
-  selection without ever writing the shared `_state.Tab`). A pop-out is **lean** — `Rebuild` drops the
-  Asset (meta) row + the transport bar + section gap when `_soloTab != null`, keeping just header +
+  **session-only** `_soloTab` (NOT `[SerializeField]`: a serialized solo flag bakes the lean state into
+  the saved layout, so a torn-off window came back lean every session and stranded the Asset
+  field/transport — now a pop-out reverts to a full window after a domain reload/restart) hides the tab
+  strip (`PopulateTabs` early-out) and forces `_tab` (clamped right after `_tab = _state.Tab` in
+  `SetTarget`, so it follows selection without ever writing the shared `_state.Tab`). A pop-out is
+  **lean** — `Rebuild` always builds the Asset (meta) row + transport bar + section gap but sets their
+  `display` to `None` when `_soloTab != null` (so they can never be stranded out of the tree), keeping just header +
   chrome (search + chips) + rail + the one tab's body — and is a **passive observer**: `Tick` only
   advances the playback clock when `_soloTab == null`, so multiple windows never fight over
   `Reinit`/`pause` on the shared effect (the main window stays the transport's home). `Open` (the
@@ -377,11 +380,21 @@ Sphere/Circle/Torus variants work with no extra code).
     (`VfxGraphReflection.CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker` → the *internal*
     `VisualEffect.GetCPU…/GetGPUTaskMarkerName`). Gotcha: `GetCPUEffectMarkerName` is **not**
     parameterless — it takes a `VisualEffect.VFXCPUEffectMarkers` enum; we pass **`FullUpdate`** (the
-    whole-effect CPU update). They're fed to public `Recorder.Get(name)` →
+    whole-effect CPU update). Each marker method also has **two overloads** — a private `(Int32 nameID, …)`
+    and the `(string systemName, …)` we want — so the reflection pins the parameter types exactly (grabbing
+    the int overload and invoking with a string throws → empty marker → "—"). They're fed to public
+    `Recorder.Get(name)` →
     `elapsedNanoseconds` (CPU) / `gpuElapsedNanoseconds` (GPU). Recorders are created+enabled lazily,
     cached in `_recorders` (keyed by marker, cleared on target change); GPU tasks are probed by index
-    until a marker comes back empty (`SumGpuMs`). Markers only emit while the effect updates (edit mode
-    works while it's playing/visible).
+    until a marker comes back empty (`SumGpuMs`). **Crucially, the per-system CPU/GPU markers are only
+    emitted while the component is _registered for profiling_** (`VfxGraphReflection.RegisterForProfiling`,
+    mirrors `VFXProfilingBoard.Attach`) — `EnsureProfiling` (called from `RefreshDebugStats` while the
+    timing readouts are on screen) registers `_effect` on demand (idempotent, self-heals across windows,
+    switches on target change), and `StopProfiling`/`OnDisable` unregisters. Markers also need the effect
+    to be updating (edit mode works while it's playing/visible). Each marker's ns is lightly
+    **EMA-smoothed** (`Smoothed`/`_smoothNs`, weight `kTimerSmooth`) so the readout doesn't flicker, then
+    formatted by `FmtMs` (adaptive: ms ≥ 1 ms, else **µs** — per-system costs are usually a few µs,
+    below "0.00 ms" precision).
   - **Attribute memory** = per-system stride × capacity × 4. The stride (words/particle) is
     `VfxGraphReflection.GetSystemAttributeWords` (Σ of `VFXDataParticle.GetCurrentAttributeLayout()`
     bucket sizes, mapped to system names via `VFXSystemNames.GetUniqueSystemName`) — the same layout

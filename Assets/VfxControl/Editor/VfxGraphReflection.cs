@@ -91,6 +91,8 @@ namespace VfxControl.EditorTools
         static object s_CpuEffectMarkerArg;      // VisualEffect.VFXCPUEffectMarkers.FullUpdate
         static MethodInfo s_CpuSystemMarker;     // string GetCPUSystemMarkerName(string)
         static MethodInfo s_GpuTaskMarker;       // string GetGPUTaskMarkerName(string, int)
+        // Per-system CPU/GPU markers are only emitted while the component is registered for profiling.
+        static MethodInfo s_Register, s_Unregister, s_IsRegistered;
 
         /// When true, GetExposedParameters logs each resolution/enumeration step.
         internal static bool Verbose;
@@ -201,17 +203,27 @@ namespace VfxControl.EditorTools
                     .FirstOrDefault(m => m.Name == "GetUniqueSystemName" && m.GetParameters().Length == 1);
 
                 // Component profiler markers on the runtime VisualEffect (internal instance methods).
+                // NOTE: each has TWO overloads — a private (Int32 nameID, …) and the (string systemName, …)
+                // one we want. Pin the parameter types exactly, or FirstOrDefault may grab the int overload
+                // and Invoke(...) with a string throws → empty marker → "—".
                 var veType = typeof(VisualEffect);
-                // GetCPUEffectMarkerName takes a VFXCPUEffectMarkers enum; FullUpdate = whole-effect CPU.
-                s_CpuEffectMarker = veType.GetMethods(any)
-                    .FirstOrDefault(m => m.Name == "GetCPUEffectMarkerName" && m.GetParameters().Length == 1);
-                var cpuMarkerEnum = veType.GetNestedType("VFXCPUEffectMarkers", BindingFlags.Public | BindingFlags.NonPublic);
-                if (cpuMarkerEnum != null && cpuMarkerEnum.IsEnum)
+                // GetCPUEffectMarkerName has (Int32) and (VFXCPUEffectMarkers) overloads — take the enum
+                // one and read FullUpdate (whole-effect CPU) from its parameter type.
+                s_CpuEffectMarker = veType.GetMethods(any).FirstOrDefault(m =>
+                    m.Name == "GetCPUEffectMarkerName" && m.GetParameters().Length == 1 &&
+                    m.GetParameters()[0].ParameterType.IsEnum);
+                var cpuMarkerEnum = s_CpuEffectMarker?.GetParameters()[0].ParameterType;
+                if (cpuMarkerEnum != null)
                     try { s_CpuEffectMarkerArg = Enum.Parse(cpuMarkerEnum, "FullUpdate"); } catch { }
-                s_CpuSystemMarker = veType.GetMethods(any)
-                    .FirstOrDefault(m => m.Name == "GetCPUSystemMarkerName" && m.GetParameters().Length == 1);
-                s_GpuTaskMarker = veType.GetMethods(any)
-                    .FirstOrDefault(m => m.Name == "GetGPUTaskMarkerName" && m.GetParameters().Length == 2);
+                s_CpuSystemMarker = veType.GetMethods(any).FirstOrDefault(m =>
+                    m.Name == "GetCPUSystemMarkerName" && m.GetParameters().Length == 1 &&
+                    m.GetParameters()[0].ParameterType == typeof(string));
+                s_GpuTaskMarker = veType.GetMethods(any).FirstOrDefault(m =>
+                    m.Name == "GetGPUTaskMarkerName" && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[0].ParameterType == typeof(string));
+                s_Register = FindParameterless(veType, "RegisterForProfiling", any);
+                s_Unregister = FindParameterless(veType, "UnregisterForProfiling", any);
+                s_IsRegistered = FindParameterless(veType, "IsRegisteredForProfiling", any);
 
                 s_Available = s_GetResource != null && s_GetOrCreateGraph != null &&
                               s_ParameterInfoField != null && s_fSheetType != null &&
@@ -592,6 +604,17 @@ namespace VfxControl.EditorTools
         {
             if (m == null || target == null) return null;
             try { return m.Invoke(target, args) as string; } catch { return null; }
+        }
+
+        // Profiling registration — required for the per-system CPU/GPU markers to be emitted
+        // (mirrors VFXProfilingBoard.Attach). No-ops if the methods can't be resolved.
+        public static void RegisterForProfiling(VisualEffect ve) { Resolve(); try { s_Register?.Invoke(ve, null); } catch { } }
+        public static void UnregisterForProfiling(VisualEffect ve) { Resolve(); try { s_Unregister?.Invoke(ve, null); } catch { } }
+        public static bool IsRegisteredForProfiling(VisualEffect ve)
+        {
+            Resolve();
+            if (s_IsRegistered == null || ve == null) return false;
+            try { return s_IsRegistered.Invoke(ve, null) is bool b && b; } catch { return false; }
         }
     }
 }
