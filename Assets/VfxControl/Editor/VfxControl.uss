@@ -668,6 +668,169 @@
     color: var(--unity-colors-label-text);
 }
 
+/* ---- Debug tab: live statistics grid ----
+   2-column grid of stat cells. The 1px gridlines are the container's border colour showing
+   through each cell's right/bottom border (overflow:hidden clips the trailing edges). */
+.vfx-stat-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-width: 1px;
+    border-color: var(--unity-colors-default-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.vfx-stat {
+    flex-grow: 1;
+    flex-basis: 40%; /* forces two cells per row */
+    min-width: 110px;
+    padding: 7px 9px;
+    background-color: var(--unity-colors-default-background);
+    border-right-width: 1px;
+    border-bottom-width: 1px;
+    border-color: var(--unity-colors-default-border);
+}
+.vfx-stat-k {
+    font-size: 10px;
+    color: var(--unity-colors-label-text);
+    margin-bottom: 2px;
+}
+.vfx-stat-vrow {
+    flex-direction: row;
+    align-items: flex-end;
+}
+.vfx-stat-v {
+    font-size: 14px;
+    color: var(--unity-colors-default-text);
+}
+.vfx-stat-u {
+    font-size: 10px;
+    margin-left: 3px;
+    margin-bottom: 1px;
+    color: var(--unity-colors-label-text);
+}
+
+/* ---- Debug tab: per-system capacity bars ---- */
+.vfx-syslist {
+    flex-direction: column;
+    padding: 4px 2px;
+}
+.vfx-sys {
+    flex-direction: column;
+    margin-bottom: 8px;
+}
+.vfx-sys-top {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 3px;
+}
+.vfx-sys-name {
+    flex-grow: 1;
+    font-size: 11px;
+    color: var(--unity-colors-default-text);
+}
+.vfx-sys-num {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-sys-bar {
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background-color: var(--unity-colors-slider_groove-background);
+}
+.vfx-sys-fill {
+    height: 6px;
+    width: 0;
+    border-radius: 3px;
+    background-color: var(--unity-colors-highlight-background);
+}
+.vfx-sys--sleeping {
+    opacity: 0.5;
+}
+.vfx-sys-empty {
+    padding: 6px 2px;
+    color: var(--unity-colors-label-text);
+}
+/* per-system detail line under the bar: cpu/gpu ms + attribute memory */
+.vfx-sys-detail {
+    margin-top: 3px;
+    font-size: 10px;
+    color: var(--unity-colors-label-text);
+}
+
+/* ---- Debug tab: texture usage ---- */
+.vfx-texlist {
+    flex-direction: column;
+    padding: 2px;
+}
+.vfx-tex {
+    flex-direction: row;
+    align-items: center;
+    padding: 3px 4px;
+    border-radius: 2px;
+}
+.vfx-tex:hover {
+    background-color: var(--unity-colors-highlight-background-hover);
+}
+.vfx-tex-name {
+    flex-grow: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--unity-colors-default-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vfx-tex-res {
+    flex-shrink: 0;
+    width: 96px;
+    -unity-text-align: middle-right;
+    font-size: 10px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-tex-size {
+    flex-shrink: 0;
+    width: 72px;
+    -unity-text-align: middle-right;
+    font-size: 11px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-tex-total {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 4px;
+    padding: 4px;
+    border-top-width: 1px;
+    border-top-color: var(--unity-colors-default-border);
+}
+
+/* ---- Debug tab: visualizer toggle rows ---- */
+.vfx-toggle-row {
+    flex-direction: row;
+    align-items: center;
+    padding: 6px 2px;
+}
+.vfx-toggle-row:hover {
+    background-color: var(--unity-colors-highlight-background-hover);
+}
+.vfx-toggle-check {
+    flex-shrink: 0;
+    margin-right: 8px;
+}
+.vfx-toggle-text {
+    flex-direction: column;
+    flex-grow: 1;
+}
+.vfx-tg-label {
+    font-size: 12px;
+    color: var(--unity-colors-default-text);
+}
+.vfx-tg-sub {
+    font-size: 10px;
+    color: var(--unity-colors-label-text);
+}
+
 /* ---- "All" tab block headers (Properties / Renderer / Playback) ----
    Collapsible top-level dividers: must read ABOVE the boxed category headers (12px) below them,
    so the title is larger, brighter, letter-spaced, and set off by whitespace + a neutral rule. */
@@ -692,6 +855,26 @@
     letter-spacing: 1px;
     flex-grow: 1;
     color: var(--unity-colors-default-text);
+}
+
+/* Debug "section" is a jump-link to the Debug tab, not a foldable section: hover affordance +
+   a live teaser + a → glyph signal that clicking navigates rather than expands. */
+.vfx-allsection-head--link {
+    cursor: link;
+}
+.vfx-allsection-head--link:hover {
+    background-color: var(--unity-colors-highlight-background-hover);
+}
+.vfx-debug-teaser {
+    -unity-font-style: normal;
+    font-size: 11px;
+    letter-spacing: 0;
+    margin-right: 6px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-allsection-jump {
+    font-size: 13px;
+    color: var(--unity-colors-label-text);
 }
 
 /* ---- Playback tab ---- */

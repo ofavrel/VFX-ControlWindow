@@ -74,6 +74,24 @@ namespace VfxControl.EditorTools
         // each with attributeName + type (CustomAttributeUtility.Signature, 0..6 = Float..Int).
         static PropertyInfo s_CustomAttrsProp;
 
+        // --- Debug-tab profiling extras (all optional; degrade to no data) ---
+        // Attribute layout → per-system buffer size: VFXContext.GetData() → VFXDataParticle,
+        // .GetCurrentAttributeLayout() → StructureOfArrayProvider.BucketInfo[] (each .size in dwords).
+        // System name via VFXGraph.systemNames.GetUniqueSystemName(VFXData).
+        static Type s_ContextType, s_DataParticleType;
+        static MethodInfo s_GetData;             // VFXData VFXContext.GetData()
+        static MethodInfo s_GetCurrentLayout;    // BucketInfo[] VFXDataParticle.GetCurrentAttributeLayout()
+        static FieldInfo s_BucketSizeField;      // int BucketInfo.size (resolved from the returned element type)
+        static PropertyInfo s_SystemNamesProp;   // VFXSystemNames VFXGraph.systemNames
+        static MethodInfo s_GetUniqueSystemName; // string VFXSystemNames.GetUniqueSystemName(VFXData)
+        // Texture usage: walk slot containers' inputSlots + sub-slots, read VFXSlot.value as Texture
+        // (slot members resolved by name per object via GetProp — no cached handles needed).
+        // Component profiler markers (internal instance methods on the runtime VisualEffect).
+        static MethodInfo s_CpuEffectMarker;     // string GetCPUEffectMarkerName(VFXCPUEffectMarkers)
+        static object s_CpuEffectMarkerArg;      // VisualEffect.VFXCPUEffectMarkers.FullUpdate
+        static MethodInfo s_CpuSystemMarker;     // string GetCPUSystemMarkerName(string)
+        static MethodInfo s_GpuTaskMarker;       // string GetGPUTaskMarkerName(string, int)
+
         /// When true, GetExposedParameters logs each resolution/enumeration step.
         internal static bool Verbose;
 
@@ -170,6 +188,30 @@ namespace VfxControl.EditorTools
                     .FirstOrDefault(p => p.Name == "children" && p.GetIndexParameters().Length == 0);
 
                 s_CustomAttrsProp = graphType.GetProperty("customAttributes", any);
+
+                // Debug-tab extras — optional; resolution failures just disable that one readout.
+                s_SystemNamesProp = graphType.GetProperty("systemNames", any);
+                s_ContextType = asm.GetType("UnityEditor.VFX.VFXContext");
+                s_GetData = s_ContextType != null ? FindParameterless(s_ContextType, "GetData", any) : null;
+                s_DataParticleType = asm.GetType("UnityEditor.VFX.VFXDataParticle");
+                s_GetCurrentLayout = s_DataParticleType?.GetMethods(any)
+                    .FirstOrDefault(m => m.Name == "GetCurrentAttributeLayout" && m.GetParameters().Length == 0);
+                var sysNamesType = asm.GetType("UnityEditor.VFX.VFXSystemNames");
+                s_GetUniqueSystemName = sysNamesType?.GetMethods(any)
+                    .FirstOrDefault(m => m.Name == "GetUniqueSystemName" && m.GetParameters().Length == 1);
+
+                // Component profiler markers on the runtime VisualEffect (internal instance methods).
+                var veType = typeof(VisualEffect);
+                // GetCPUEffectMarkerName takes a VFXCPUEffectMarkers enum; FullUpdate = whole-effect CPU.
+                s_CpuEffectMarker = veType.GetMethods(any)
+                    .FirstOrDefault(m => m.Name == "GetCPUEffectMarkerName" && m.GetParameters().Length == 1);
+                var cpuMarkerEnum = veType.GetNestedType("VFXCPUEffectMarkers", BindingFlags.Public | BindingFlags.NonPublic);
+                if (cpuMarkerEnum != null && cpuMarkerEnum.IsEnum)
+                    try { s_CpuEffectMarkerArg = Enum.Parse(cpuMarkerEnum, "FullUpdate"); } catch { }
+                s_CpuSystemMarker = veType.GetMethods(any)
+                    .FirstOrDefault(m => m.Name == "GetCPUSystemMarkerName" && m.GetParameters().Length == 1);
+                s_GpuTaskMarker = veType.GetMethods(any)
+                    .FirstOrDefault(m => m.Name == "GetGPUTaskMarkerName" && m.GetParameters().Length == 2);
 
                 s_Available = s_GetResource != null && s_GetOrCreateGraph != null &&
                               s_ParameterInfoField != null && s_fSheetType != null &&
@@ -414,6 +456,142 @@ namespace VfxControl.EditorTools
             if (p != null) return p.GetValue(obj);
             var f = t.GetField(field, any);
             return f?.GetValue(obj);
+        }
+
+        // ---- Debug-tab profiling helpers ---------------------------------------------------
+
+        const BindingFlags InstanceAny = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+        static bool TryGetGraph(VisualEffectAsset asset, out object graph)
+        {
+            graph = null;
+            var resource = s_GetResource.Invoke(null, new object[] { asset });
+            if (resource == null) return false;
+            graph = s_GetOrCreateGraph.Invoke(null, new[] { resource });
+            return graph != null;
+        }
+
+        // A parameterless instance property by name (first match — tolerant of `new`-hidden overrides
+        // like VFXModel.children / VFXGraph.children).
+        static object GetProp(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                var p = obj.GetType().GetProperties(InstanceAny)
+                    .FirstOrDefault(x => x.Name == name && x.GetIndexParameters().Length == 0);
+                return p?.GetValue(obj);
+            }
+            catch { return null; }
+        }
+
+        /// Every distinct Texture wired into the asset's graph — exposed or not — by walking each
+        /// node's (and its blocks') input slots and reading the slot value (mirrors the package
+        /// profiler's CollectAllTextureSlotsRecursive). Empty if the graph can't be reached.
+        public static List<Texture> GetTextureUsage(VisualEffectAsset asset)
+        {
+            var result = new List<Texture>();
+            if (asset == null) return result;
+            Resolve();
+            if (!s_Available || s_ChildrenProp == null) return result;
+
+            try
+            {
+                if (!TryGetGraph(asset, out var graph)) return result;
+                var seen = new HashSet<Texture>();
+                if (s_ChildrenProp.GetValue(graph) is IEnumerable children)
+                    foreach (var child in children)
+                    {
+                        ScanContainer(child, result, seen);
+                        if (GetProp(child, "children") is IEnumerable blocks) // a context's blocks
+                            foreach (var block in blocks) ScanContainer(block, result, seen);
+                    }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read texture usage: {e.Message}");
+            }
+            return result;
+        }
+
+        static void ScanContainer(object container, List<Texture> result, HashSet<Texture> seen)
+        {
+            if (GetProp(container, "inputSlots") is IEnumerable slots)
+                foreach (var slot in slots) ScanSlot(slot, result, seen);
+        }
+
+        static void ScanSlot(object slot, List<Texture> result, HashSet<Texture> seen)
+        {
+            if (slot == null) return;
+            if (GetProp(slot, "value") is Texture tex && tex != null && seen.Add(tex))
+                result.Add(tex);
+            if (GetProp(slot, "children") is IEnumerable subs) // compound slots (sub-slots)
+                foreach (var s in subs) ScanSlot(s, result, seen);
+        }
+
+        /// Per-system attribute-buffer stride in 32-bit words (Σ of the current attribute layout's
+        /// bucket sizes), keyed by unique system name. Bytes = words × capacity × 4. Mirrors the VFX
+        /// inspector's "Current Attribute Layout" (VFXDataParticle.GetCurrentAttributeLayout). The
+        /// layout is [NonSerialized] — populated when the graph compiles — so a system is OMITTED
+        /// (→ caller shows "—") until the graph has been compiled/opened this session.
+        public static Dictionary<string, int> GetSystemAttributeWords(VisualEffectAsset asset)
+        {
+            var result = new Dictionary<string, int>();
+            if (asset == null) return result;
+            Resolve();
+            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
+                s_GetData == null || s_GetCurrentLayout == null) return result;
+
+            try
+            {
+                if (!TryGetGraph(asset, out var graph)) return result;
+                var systemNames = s_SystemNamesProp?.GetValue(graph);
+                var seen = new HashSet<object>();
+                if (s_ChildrenProp.GetValue(graph) is IEnumerable children)
+                    foreach (var child in children)
+                    {
+                        if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
+                        object data;
+                        try { data = s_GetData.Invoke(child, null); } catch { continue; }
+                        if (data == null) continue;
+                        if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
+                        if (!seen.Add(data)) continue; // contexts share one data per system
+
+                        if (!(s_GetCurrentLayout.Invoke(data, null) is Array buckets) || buckets.Length == 0) continue;
+                        if (s_BucketSizeField == null)
+                            s_BucketSizeField = buckets.GetType().GetElementType()?.GetField("size", InstanceAny);
+                        if (s_BucketSizeField == null) continue;
+
+                        int words = 0;
+                        foreach (var b in buckets) words += Convert.ToInt32(s_BucketSizeField.GetValue(b));
+
+                        string name = null;
+                        if (systemNames != null && s_GetUniqueSystemName != null)
+                            try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                        if (!string.IsNullOrEmpty(name)) result[name] = words;
+                    }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read attribute layout: {e.Message}");
+            }
+            return result;
+        }
+
+        // Profiler marker names on the runtime component (internal). Feed into UnityEngine.Profiling
+        // Recorder.Get(name) for CPU/GPU timing. Null when unavailable (no recorder → "—").
+        public static string CpuEffectMarker(VisualEffect ve)
+        {
+            Resolve();
+            return s_CpuEffectMarkerArg == null ? null : InvokeStr(s_CpuEffectMarker, ve, new[] { s_CpuEffectMarkerArg });
+        }
+        public static string CpuSystemMarker(VisualEffect ve, string system) { Resolve(); return InvokeStr(s_CpuSystemMarker, ve, new object[] { system }); }
+        public static string GpuTaskMarker(VisualEffect ve, string system, int taskIndex) { Resolve(); return InvokeStr(s_GpuTaskMarker, ve, new object[] { system, taskIndex }); }
+
+        static string InvokeStr(MethodInfo m, object target, object[] args)
+        {
+            if (m == null || target == null) return null;
+            try { return m.Invoke(target, args) as string; } catch { return null; }
         }
     }
 }

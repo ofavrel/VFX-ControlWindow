@@ -18,6 +18,7 @@ using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
@@ -64,6 +65,34 @@ namespace VfxControl.EditorTools
         Button _resetAllBtn, _playBtn, _loopBtn;
         Image _playIcon;
         Slider _rateSlider; // Play Rate strip under the transport (resynced by UpdateLive)
+
+        // --- Debug tab live stat refs (rebuilt with the body; refreshed in place by UpdateLive) ---
+        Label _dbgAlive, _dbgAliveCap, _dbgEff, _dbgSystems, _dbgBounds, _dbgState;
+        Label _dbgCpu, _dbgGpu, _dbgAttrMem; // effect CPU/GPU time (ms) + total attribute memory
+        Label _dbgTeaser; // All-tab "Debug" shortcut summary (one label, refreshed live)
+        readonly List<string> _dbgSysNames = new List<string>(); // reused buffer (no per-tick alloc)
+        // Per-system capacity-bar rows (Systems section), refreshed in place; order matches _dbgSysNames.
+        readonly List<(string name, Label num, VisualElement fill, VisualElement row, Label detail)> _dbgSysRows
+            = new List<(string, Label, VisualElement, VisualElement, Label)>();
+        // Profiler Recorders keyed by marker name (created+enabled lazily); reset on target change.
+        readonly Dictionary<string, Recorder> _recorders = new Dictionary<string, Recorder>();
+        // Per-system attribute-buffer stride in 32-bit words (Σ bucket sizes); from the graph layout.
+        // Computed per body build (static per asset); empty entries → "—" (layout not yet compiled).
+        Dictionary<string, int> _attrWords = new Dictionary<string, int>();
+        Toggle _showBoundsToggle; // the Visualizers "Show Bounds" checkbox (resynced each tick)
+        // Show Bounds is SHARED across all windows (read straight from SessionState, not cached) so a
+        // torn-off Debug tab stays in sync with the main window — both the scene draw and the
+        // checkbox (UpdateLive resyncs the toggle when another window flips it).
+        const string kShowBoundsKey = "vfxctrl.showBounds";
+        bool ShowBounds
+        {
+            get => SessionState.GetBool(kShowBoundsKey, false);
+            set => SessionState.SetBool(kShowBoundsKey, value);
+        }
+
+        // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
+        // _tab is pinned). Serialized so a docked pop-out survives domain reload / editor restart.
+        [SerializeField] string _soloTab;
         // persistent chrome containers: the search field is built ONCE (so typing never
         // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
         ToolbarSearchField _searchField;
@@ -129,6 +158,9 @@ namespace VfxControl.EditorTools
         public static void Open()
         {
             var w = GetWindow<VfxControlWindow>();
+            // If the focused instance is a torn-off (solo) pop-out, restore it to a full window so
+            // the menu always yields a complete inspector (the tab strip is otherwise hidden).
+            if (w._soloTab != null) { w._soloTab = null; w.Rebuild(); }
             w.titleContent = new GUIContent("VFX Control");
             w.minSize = new Vector2(320, 360);
             w.Show();
@@ -303,6 +335,7 @@ namespace VfxControl.EditorTools
         void SetTarget(VisualEffect effect, List<VisualEffect> targets)
         {
             _gizmoStruct = null; // gizmo target is invalid for a new component
+            _recorders.Clear();  // marker names embed the old effect/system — drop stale Recorders
             _effect = effect;
 
             _effects.Clear();
@@ -334,6 +367,7 @@ namespace VfxControl.EditorTools
             _collapsed = _state.LoadCollapsed();
             _constrained = _state.LoadConstrained();
             _tab = _state.Tab;
+            if (_soloTab != null) _tab = _soloTab; // a pop-out window is pinned to its one tab
             _filter = _state.Filter;
             _search = _state.Search;
             LoadSections();
@@ -399,9 +433,15 @@ namespace VfxControl.EditorTools
             if (_so == null) SetTarget(_effect); // recover after a domain reload
             UpdateAllSos();
 
-            root.Add(BuildMetaSection());
-            root.Add(BuildMiniTransport());
-            root.Add(MakeElement("vfx-section-gap"));   // the intentional divider
+            // Pop-out (solo) windows are lean: just header + chrome + rail + the one tab's body.
+            // The Asset field and the transport bar are dropped (the transport stays the main
+            // window's job — see Tick, which doesn't advance the clock in a solo window).
+            if (_soloTab == null)
+            {
+                root.Add(BuildMetaSection());
+                root.Add(BuildMiniTransport());
+                root.Add(MakeElement("vfx-section-gap"));   // the intentional divider
+            }
 
             // Persistent chrome: search + chips ABOVE the tabs (shared across tabs), then
             // the tab strip, the per-tab section rail, and the body. Only the search field
@@ -449,8 +489,8 @@ namespace VfxControl.EditorTools
             new TabDef { Id = "render", Label = "Renderer", HasRail = true, Sections = RendererSections, Build = BuildRendererTab, ChipCounts = RendererChipCounts },
             new TabDef
             {
-                Id = "debug", Label = "Debug", HasRail = true, Sections = NoSections,
-                Build = body => BuildPlaceholder(body, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."),
+                Id = "debug", Label = "Debug", HasRail = true, Sections = DebugSections,
+                Build = BuildDebugTab,
                 ChipCounts = () => (0, 0, 0),
             },
         };
@@ -503,6 +543,15 @@ namespace VfxControl.EditorTools
             new SectionDef { Id = "events", Label = "Send Event" },
         };
 
+        // Debug sections: the live stat grid, per-system capacity bars, texture usage, visualizers.
+        static List<SectionDef> DebugSections() => new List<SectionDef>
+        {
+            new SectionDef { Id = "live", Label = "Live statistics" },
+            new SectionDef { Id = "systems", Label = "Systems" },
+            new SectionDef { Id = "textures", Label = "Textures" },
+            new SectionDef { Id = "visualizers", Label = "Visualizers" },
+        };
+
         // Search + chips chrome. Built once per Rebuild; the search field reference is kept
         // so PopulateActiveTab never recreates it (preserving focus while typing).
         VisualElement BuildChrome()
@@ -552,6 +601,9 @@ namespace VfxControl.EditorTools
         void PopulateTabs()
         {
             if (_tabsHost == null) return;
+            // Pop-out (solo) windows show a single pinned tab — hide the strip entirely.
+            if (_soloTab != null) { _tabsHost.style.display = DisplayStyle.None; return; }
+            _tabsHost.style.display = DisplayStyle.Flex;
             _tabsHost.Clear();
             foreach (var def in _tabDefs)
                 _tabsHost.Add(MakeTab(def.Id, def.Label, def.Count));
@@ -735,7 +787,12 @@ namespace VfxControl.EditorTools
             // the whole tab body in one go (like Alt+click on a category/struct header).
             var tab = new Button();
             tab.AddToClassList("vfx-tab");
-            tab.tooltip = "Alt+click to expand/collapse all";
+            tab.tooltip = "Alt+click to expand/collapse all · right-click to open in a new window";
+            // Tear-off: right-click any focused tab → pop it into its own dockable window. Excluded
+            // for "All" (a solo All would host the Debug shortcut whose jump has no strip to land on).
+            if (id != "all")
+                tab.AddManipulator(new ContextualMenuManipulator(evt =>
+                    evt.menu.AppendAction("Open in new window", _ => OpenSolo(id, label))));
             tab.RegisterCallback<ClickEvent>(e =>
             {
                 if (e.altKey)
@@ -757,6 +814,20 @@ namespace VfxControl.EditorTools
                 tab.Add(badge);
             }
             return tab;
+        }
+
+        // Open the given tab in its own dockable VfxControlWindow ("solo" mode): a distinct
+        // instance pinned to one tab, following scene selection like the main window. Per-asset
+        // state (favorites/collapsed/payloads) is shared via EditorPrefs/SessionState.
+        static void OpenSolo(string tabId, string label)
+        {
+            var w = CreateWindow<VfxControlWindow>();
+            w._soloTab = tabId;
+            w._tab = tabId; // OnEnable already ran (non-solo); pin then re-render in solo mode
+            w.titleContent = new GUIContent("VFX · " + label);
+            w.minSize = new Vector2(300, 300);
+            w.Show();
+            w.Rebuild();
         }
 
         // ------------------------------------------------------------------ properties tab
@@ -1068,6 +1139,413 @@ namespace VfxControl.EditorTools
             group.Add(content);
             host.Add(group);
             return visible.Count;
+        }
+
+        // ---- Debug tab (live runtime stats) -------------------------------------------------
+        // Rail-filtered sections (handoff "Tab: Debug"): the live stat grid, per-system capacity
+        // bars, and scene visualizers. All values are public runtime API on VisualEffect — no
+        // reflection. Live values refresh in place off the ~30fps clock (RefreshDebugStats).
+        void BuildDebugTab(VisualElement body)
+        {
+            _dbgSysRows.Clear(); // discard refs from the prior body before rebuilding
+            if (_effect == null) { BuildPlaceholder(body, "No Visual Effect selected."); return; }
+
+            // Attribute layout is static per asset — read it once per body build (not per tick).
+            _attrWords = VfxGraphReflection.GetSystemAttributeWords(_effect.visualEffectAsset);
+
+            string section = CurrentSection();
+            bool InSection(string id) => section == "all" || section == id;
+
+            if (InSection("live"))
+                AddDebugGroup(body, "live", "Live statistics", BuildDebugStatsGrid);
+            if (InSection("systems"))
+                AddDebugGroup(body, "systems", "Systems", BuildDebugSystems);
+            if (InSection("textures"))
+                AddDebugGroup(body, "textures", "Textures", BuildDebugTextures);
+            if (InSection("visualizers"))
+                AddDebugGroup(body, "visualizers", "Visualizers", BuildDebugVisualizers);
+
+            RefreshDebugStats(); // groups are now attached — fill values for a clean first paint
+        }
+
+        // A collapsible Debug section group (the shared .vfx-group chrome; collapse key debug:<id>).
+        void AddDebugGroup(VisualElement host, string id, string title, Action<VisualElement> buildContent)
+        {
+            string key = "debug:" + id;
+            bool open = !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label(title);
+            titleLbl.AddToClassList("vfx-group-title");
+            header.Add(titleLbl);
+            header.tooltip = "Click to expand/collapse";
+            header.RegisterCallback<ClickEvent>(e =>
+            {
+                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                _state.SaveCollapsed(_collapsed);
+                RebuildBodyOnly();
+            });
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            if (open) buildContent(content);
+            group.Add(content);
+            host.Add(group);
+        }
+
+        // The 2-column stat grid. Sets the _dbg* label refs (cleared first so a stale refresh from
+        // a prior body can't touch detached labels), then fills them with one immediate read.
+        void BuildDebugStatsGrid(VisualElement host)
+        {
+            _dbgAlive = _dbgAliveCap = _dbgEff = _dbgSystems = _dbgBounds = _dbgState = null;
+            _dbgCpu = _dbgGpu = _dbgAttrMem = null;
+
+            var grid = MakeElement("vfx-stat-grid");
+            _dbgAlive   = MakeStat(grid, "Alive particles", out _dbgAliveCap,
+                                   "Living particles summed across all systems, over total capacity.");
+            _dbgEff     = MakeStat(grid, "Efficiency", out _,
+                                   "Alive / capacity across all systems — how much allocated budget is in use.");
+            _dbgSystems = MakeStat(grid, "Systems", out _, "Number of particle systems in this effect.");
+            _dbgBounds  = MakeStat(grid, "Bounds", out _, "World-space render bounds size (X × Y × Z) from the VFXRenderer.");
+            _dbgState   = MakeStat(grid, "State", out _, "Whether the effect is playing, paused, or culled from rendering.");
+            _dbgCpu     = MakeStat(grid, "CPU time", out _, "CPU evaluation time for the whole effect this frame (profiler Recorder).");
+            _dbgGpu     = MakeStat(grid, "GPU time", out _,
+                                   "GPU time across all systems this frame. Needs a GPU recorder (SystemInfo.supportsGpuRecorder); shows “—” where unsupported.");
+            _dbgAttrMem = MakeStat(grid, "Attr memory", out _,
+                                   "Total attribute-buffer memory across systems (capacity × per-particle stride). “—” until the graph is compiled/opened.");
+
+            host.Add(grid);
+            RefreshDebugStats();
+        }
+
+        // One stat cell: an uppercase key over a value (+ optional dim unit/suffix label).
+        // Returns the value label; the unit label comes back via `unit`.
+        Label MakeStat(VisualElement grid, string key, out Label unit, string tooltip)
+        {
+            var cell = MakeElement("vfx-stat");
+            cell.tooltip = tooltip;
+            var k = new Label(key.ToUpperInvariant());
+            k.AddToClassList("vfx-stat-k");
+            cell.Add(k);
+            var vrow = MakeElement("vfx-stat-vrow");
+            var v = new Label("—");
+            v.AddToClassList("vfx-stat-v");
+            vrow.Add(v);
+            unit = new Label();
+            unit.AddToClassList("vfx-stat-u");
+            vrow.Add(unit);
+            cell.Add(vrow);
+            grid.Add(cell);
+            return v;
+        }
+
+        // Per-system capacity bars (mirrors the package's profiler occupancy section). Each row =
+        // system name + alive/capacity numbers + a bar whose fill width is alive/capacity and whose
+        // colour follows the VFX efficiency convention (red under-used → green well-utilised). Rows
+        // are cached in _dbgSysRows and refreshed in place; systems are stable until the asset
+        // recompiles (→ a full Rebuild), so the row set is built once here.
+        void BuildDebugSystems(VisualElement host)
+        {
+            _dbgSysRows.Clear();
+            _effect.GetParticleSystemNames(_dbgSysNames);
+            if (_dbgSysNames.Count == 0)
+            {
+                var empty = new Label("This effect has no particle systems.");
+                empty.AddToClassList("vfx-sys-empty");
+                host.Add(empty);
+                return;
+            }
+
+            var list = MakeElement("vfx-syslist");
+            foreach (var name in _dbgSysNames)
+            {
+                var row = MakeElement("vfx-sys");
+                var top = MakeElement("vfx-sys-top");
+                var nameLbl = new Label(name);
+                nameLbl.AddToClassList("vfx-sys-name");
+                top.Add(nameLbl);
+                var num = new Label("—");
+                num.AddToClassList("vfx-sys-num");
+                top.Add(num);
+                row.Add(top);
+
+                var bar = MakeElement("vfx-sys-bar");
+                var fill = MakeElement("vfx-sys-fill");
+                bar.Add(fill);
+                row.Add(bar);
+
+                var detail = new Label();
+                detail.AddToClassList("vfx-sys-detail");
+                row.Add(detail);
+
+                list.Add(row);
+                _dbgSysRows.Add((name, num, fill, row, detail));
+            }
+            host.Add(list);
+            RefreshDebugStats();
+        }
+
+        // Texture usage: every texture wired into the graph (exposed or not), via reflection over the
+        // graph slots (mirrors the VFX profiler). Static per asset, so no live refresh. Rows are
+        // name · resolution · size (public Profiler.GetRuntimeMemorySizeLong), biggest first, with a
+        // total; clicking a row pings the texture asset.
+        void BuildDebugTextures(VisualElement host)
+        {
+            var textures = VfxGraphReflection.GetTextureUsage(_effect.visualEffectAsset);
+            if (textures.Count == 0)
+            {
+                var empty = new Label("No textures found (or the graph isn’t reachable).");
+                empty.AddToClassList("vfx-sys-empty");
+                host.Add(empty);
+                return;
+            }
+
+            var list = MakeElement("vfx-texlist");
+            long total = 0;
+            foreach (var tex in textures.OrderByDescending(Profiler.GetRuntimeMemorySizeLong))
+            {
+                long bytes = Profiler.GetRuntimeMemorySizeLong(tex);
+                total += bytes;
+
+                var row = MakeElement("vfx-tex");
+                row.tooltip = "Click to ping the texture in the Project window.";
+                var name = new Label(tex.name);
+                name.AddToClassList("vfx-tex-name");
+                var res = new Label(TextureResolution(tex));
+                res.AddToClassList("vfx-tex-res");
+                var size = new Label(EditorUtility.FormatBytes(bytes));
+                size.AddToClassList("vfx-tex-size");
+                row.Add(name); row.Add(res); row.Add(size);
+                row.RegisterCallback<ClickEvent>(e => EditorGUIUtility.PingObject(tex));
+                list.Add(row);
+            }
+            host.Add(list);
+
+            var totalRow = MakeElement("vfx-tex-total");
+            var tl = new Label($"{textures.Count} texture{(textures.Count == 1 ? "" : "s")}");
+            tl.AddToClassList("vfx-tex-name");
+            var tv = new Label(EditorUtility.FormatBytes(total));
+            tv.AddToClassList("vfx-tex-size");
+            totalRow.Add(tl); totalRow.Add(tv);
+            host.Add(totalRow);
+        }
+
+        static string TextureResolution(Texture t)
+        {
+            switch (t)
+            {
+                case Texture3D t3: return $"{t3.width}×{t3.height}×{t3.depth}";
+                case Cubemap c: return $"{c.width}×{c.height} cube";
+                default: return $"{t.width}×{t.height}";
+            }
+        }
+
+        // Visualizers: scene-view debug draws. "Show Bounds" draws the world-space render bounds
+        // (the only one reachable via public API — spawn-icons/wireframe/motion-vectors map to VFX
+        // debug visualizers that are internal, so they're omitted rather than faked).
+        void BuildDebugVisualizers(VisualElement host)
+        {
+            var row = MakeElement("vfx-toggle-row");
+            var toggle = new Toggle { value = ShowBounds };
+            _showBoundsToggle = toggle;
+            toggle.AddToClassList("vfx-toggle-check");
+            var col = MakeElement("vfx-toggle-text");
+            var label = new Label("Show Bounds");
+            label.AddToClassList("vfx-tg-label");
+            col.Add(label);
+            var sub = new Label("Draw the world-space render bounds in the Scene view.");
+            sub.AddToClassList("vfx-tg-sub");
+            col.Add(sub);
+            row.Add(toggle);
+            row.Add(col);
+            // Click anywhere on the row toggles (the prototype affordance). Skip clicks within the
+            // toggle itself — it flips on its own, so flipping again here would cancel it out.
+            row.RegisterCallback<ClickEvent>(e =>
+            {
+                if (e.target is VisualElement t && (t == toggle || toggle.Contains(t))) return;
+                toggle.value = !toggle.value;
+            });
+            toggle.RegisterValueChangedCallback(e =>
+            {
+                ShowBounds = e.newValue; // shared via SessionState — other windows resync in UpdateLive
+                SceneView.RepaintAll();
+            });
+            host.Add(row);
+        }
+
+        // VFX efficiency convention (VFXAnchoredProfilerUI.ComputeEfficiencyColor): how well the
+        // allocated capacity is used — under ~50% reads as over-allocated (hot/red), ~90%+ as
+        // well-utilised (cold/green).
+        static Color EfficiencyColor(float efficiency) =>
+            efficiency < 0.51f ? Hex("#ff2e2e") :
+            efficiency < 0.91f ? Hex("#e3a98b") :
+                                 Hex("#00ff47");
+
+        // Live refresh, driven by the ~30fps clock in UpdateLive. Each consumer (stat grid, All-tab
+        // teaser, per-system bars) is guarded on its widgets being attached, so this no-ops for
+        // whichever aren't the current body.
+        void RefreshDebugStats()
+        {
+            if (_effect == null) return;
+            bool gridLive = _dbgAlive?.panel != null;     // Debug tab stat grid is the current body
+            bool teaserLive = _dbgTeaser?.panel != null;  // All-tab Debug shortcut is the current body
+            bool rowsLive = _dbgSysRows.Count > 0 && _dbgSysRows[0].fill?.panel != null; // Systems section
+            if (!gridLive && !teaserLive && !rowsLive) return;
+
+            bool gpuOk = SystemInfo.supportsGpuRecorder;
+            _effect.GetParticleSystemNames(_dbgSysNames);
+            int systems = _dbgSysNames.Count;
+            long alive = 0, capacity = 0, attrBytesTotal = 0;
+            double gpuMsTotal = 0; bool anyGpu = false, anyAttr = false;
+
+            for (int i = 0; i < _dbgSysNames.Count; i++)
+            {
+                var name = _dbgSysNames[i];
+                var info = _effect.GetParticleSystemInfo(name);
+                alive += info.aliveCount;
+                capacity += info.capacity;
+
+                double cpuMs = MarkerMs(VfxGraphReflection.CpuSystemMarker(_effect, name), gpu: false);
+                double gpuMs = gpuOk ? SumGpuMs(name) : double.NaN;
+                if (!double.IsNaN(gpuMs)) { gpuMsTotal += gpuMs; anyGpu = true; }
+
+                long attrBytes = -1;
+                if (_attrWords.TryGetValue(name, out int words))
+                {
+                    attrBytes = (long)words * info.capacity * 4L;
+                    attrBytesTotal += attrBytes;
+                    anyAttr = true;
+                }
+
+                // Update the matching capacity-bar row (order mirrors _dbgSysNames; name-checked).
+                if (rowsLive && i < _dbgSysRows.Count && _dbgSysRows[i].name == name)
+                    UpdateSysRow(_dbgSysRows[i], info.aliveCount, info.capacity, info.sleeping, cpuMs, gpuMs, attrBytes);
+            }
+            // aliveParticleCount is the whole-effect async count (handoff): fall back to it when no
+            // per-system readback is available (e.g. before the first system reports).
+            if (systems == 0) alive = _effect.aliveParticleCount;
+
+            if (teaserLive)
+                _dbgTeaser.text = systems > 0
+                    ? $"{alive:N0} live · {systems} system{(systems == 1 ? "" : "s")}"
+                    : $"{alive:N0} live";
+
+            if (!gridLive) return;
+
+            _dbgAlive.text = alive.ToString("N0");
+            _dbgAliveCap.text = capacity > 0 ? $"/ {capacity:N0}" : "";
+            _dbgEff.text = capacity > 0 ? $"{(float)alive / capacity * 100f:0}%" : "—";
+            _dbgSystems.text = systems.ToString();
+
+            if (TryGetEffectBounds(out var size))
+                _dbgBounds.text = $"{size.x:0.#} × {size.y:0.#} × {size.z:0.#}";
+            else
+                _dbgBounds.text = "—";
+
+            _dbgState.text = _effect.culled ? "Culled" : _effect.pause ? "Paused" : "Playing";
+
+            double cpuEffMs = MarkerMs(VfxGraphReflection.CpuEffectMarker(_effect), gpu: false);
+            _dbgCpu.text = double.IsNaN(cpuEffMs) ? "—" : $"{cpuEffMs:0.00} ms";
+            _dbgGpu.text = (!gpuOk || !anyGpu) ? "—" : $"{gpuMsTotal:0.00} ms";
+            _dbgAttrMem.text = anyAttr ? EditorUtility.FormatBytes(attrBytesTotal) : "—";
+        }
+
+        // Update one capacity-bar row: alive/capacity numbers, fill (width + efficiency colour),
+        // a dimmed "sleeping" treatment, and the per-system detail line (CPU/GPU ms + attr memory).
+        static void UpdateSysRow((string name, Label num, VisualElement fill, VisualElement row, Label detail) r,
+                                 uint alive, uint capacity, bool sleeping, double cpuMs, double gpuMs, long attrBytes)
+        {
+            r.row.EnableInClassList("vfx-sys--sleeping", sleeping);
+            if (sleeping)
+            {
+                r.num.text = "Sleeping";
+                r.fill.style.width = Length.Percent(0f);
+            }
+            else
+            {
+                r.num.text = $"{alive:N0} / {capacity:N0}";
+                float eff = capacity > 0 ? (float)alive / capacity : 0f;
+                r.fill.style.width = Length.Percent(Mathf.Clamp01(eff) * 100f);
+                r.fill.style.backgroundColor = EfficiencyColor(eff);
+            }
+
+            var parts = new List<string>();
+            if (!double.IsNaN(cpuMs)) parts.Add($"cpu {cpuMs:0.00} ms");
+            if (!double.IsNaN(gpuMs)) parts.Add($"gpu {gpuMs:0.00} ms");
+            if (attrBytes >= 0) parts.Add($"mem {EditorUtility.FormatBytes(attrBytes)}");
+            r.detail.text = string.Join("   ·   ", parts);
+            r.detail.style.display = parts.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        // ---- profiler Recorder helpers (CPU/GPU timing) ----
+        // Recorders are created+enabled lazily, cached by marker name, and dropped on target change.
+        Recorder GetRecorder(string marker)
+        {
+            if (string.IsNullOrEmpty(marker)) return null;
+            if (!_recorders.TryGetValue(marker, out var r))
+            {
+                r = Recorder.Get(marker);
+                if (r != null && !r.enabled) r.enabled = true;
+                _recorders[marker] = r;
+            }
+            return r;
+        }
+
+        // Milliseconds from a marker's Recorder (NaN when the marker/recorder is unavailable).
+        double MarkerMs(string marker, bool gpu)
+        {
+            var r = GetRecorder(marker);
+            if (r == null) return double.NaN;
+            long ns = gpu ? r.gpuElapsedNanoseconds : r.elapsedNanoseconds;
+            return ns * 1e-6;
+        }
+
+        // Sum the GPU time of a system's tasks (marker probed by index until one comes back empty).
+        // NaN when no task markers resolve (reflection unavailable).
+        double SumGpuMs(string system)
+        {
+            double sum = 0; bool any = false;
+            for (int t = 0; t < 32; t++) // guard bound; real systems have a handful of tasks
+            {
+                string marker = VfxGraphReflection.GpuTaskMarker(_effect, system, t);
+                if (string.IsNullOrEmpty(marker)) break;
+                var r = GetRecorder(marker);
+                if (r != null) { sum += r.gpuElapsedNanoseconds * 1e-6; any = true; }
+            }
+            return any ? sum : double.NaN;
+        }
+
+        // World-space render bounds from the sibling VFXRenderer (public Renderer.bounds). The
+        // per-system GetComputedBounds is internal to the VFX editor assembly, so we use the
+        // renderer's AABB — which is what's actually culled/drawn. Returns false (→ "—") with no
+        // renderer or a degenerate (empty) box.
+        bool TryGetEffectBounds(out Vector3 size)
+        {
+            size = Vector3.zero;
+            var r = _effect.GetComponent<Renderer>();
+            if (r == null) return false;
+            size = r.bounds.size;
+            return size != Vector3.zero;
+        }
+
+        // "Show Bounds" visualizer: a world-space wire cube of the VFXRenderer's AABB. Cosmetic
+        // Handles draws must be gated on Repaint or they corrupt GL state (see the gizmo notes).
+        void DrawBoundsVisualizer()
+        {
+            if (Event.current.type != EventType.Repaint) return;
+            var r = _effect.GetComponent<Renderer>();
+            if (r == null) return;
+            var b = r.bounds;
+            if (b.size == Vector3.zero) return;
+            var prev = Handles.color;
+            Handles.color = new Color(0.35f, 0.8f, 1f, 0.9f);
+            Handles.DrawWireCube(b.center, b.size);
+            Handles.color = prev;
         }
 
         bool PlaybackChipOk(PField f) =>
@@ -1915,8 +2393,36 @@ namespace VfxControl.EditorTools
                 else
                     c.Add(BuildRendererSections(rendererSo, rendererFields));
             });
-            AddAllSection(body, "Debug", c =>
-                BuildPlaceholder(c, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."));
+            // Debug is NOT embedded here (it gets heavy): a lightweight live teaser row that
+            // jumps to the Debug tab, or can be torn off via the tab's right-click menu.
+            if (_effect != null) AddDebugShortcut(body);
+        }
+
+        // A non-folding All-tab row styled like the section dividers, but it JUMPS to the Debug
+        // tab instead of expanding. Carries a live one-line teaser (_dbgTeaser, refreshed by
+        // RefreshDebugStats) so the All tab still surfaces live stats at a glance.
+        void AddDebugShortcut(VisualElement body)
+        {
+            _dbgTeaser = null;
+            var head = MakeElement("vfx-allsection-head");
+            head.AddToClassList("vfx-allsection-head--link");
+            var title = new Label("Debug");
+            title.AddToClassList("vfx-allsection-title");
+            head.Add(title);
+            _dbgTeaser = new Label();
+            _dbgTeaser.AddToClassList("vfx-debug-teaser");
+            head.Add(_dbgTeaser);
+            var jump = new Label("→") { pickingMode = PickingMode.Ignore };
+            jump.AddToClassList("vfx-allsection-jump");
+            head.Add(jump);
+            head.tooltip = "Open the Debug tab";
+            head.RegisterCallback<ClickEvent>(e =>
+            {
+                _tab = "debug"; _state.Tab = "debug";
+                PopulateActiveTab();
+            });
+            body.Add(head);
+            RefreshDebugStats();
         }
 
         // A collapsible top-level section on the All tab: a header (twirl + title) over a content
@@ -2806,6 +3312,7 @@ namespace VfxControl.EditorTools
         }
         static readonly string[] PlaybackCollapseKeys = { "play:options", "play:events" };
         static readonly string[] RendererCollapseKeys = { "render:probes", "render:additional" };
+        static readonly string[] DebugCollapseKeys = { "debug:live", "debug:systems", "debug:textures", "debug:visualizers" };
 
         // The collapsible keys inside one All-tab section ("Properties"/"Playback"/"Renderer").
         IEnumerable<string> AllSectionCollapseKeys(string title)
@@ -2828,7 +3335,8 @@ namespace VfxControl.EditorTools
                 case "props": return PropertyCollapseKeys();
                 case "play": return PlaybackCollapseKeys;
                 case "render": return RendererCollapseKeys;
-                case "all": return new[] { "all:Properties", "all:Playback", "all:Renderer", "all:Debug" }
+                case "debug": return DebugCollapseKeys;
+                case "all": return new[] { "all:Properties", "all:Playback", "all:Renderer" } // Debug is a jump-link, not a foldable section
                     .Concat(PropertyCollapseKeys()).Concat(PlaybackCollapseKeys).Concat(RendererCollapseKeys);
                 default: return Enumerable.Empty<string>();
             }
@@ -3456,7 +3964,9 @@ namespace VfxControl.EditorTools
             float dt = Mathf.Min((float)(now - _lastTick), 0.1f); // clamp so idle gaps don't jump
             _lastTick = now;
 
-            if (_effect != null && !_effect.pause && _duration > 0f)
+            // Only the main window drives the playback clock; a transport-less pop-out just
+            // observes (otherwise multiple windows would fight over Reinit/pause on the shared effect).
+            if (_soloTab == null && _effect != null && !_effect.pause && _duration > 0f)
             {
                 float rate = _effect.playRate <= 0f ? 1f : _effect.playRate;
                 _scrubT += dt * rate / _duration;
@@ -3488,6 +3998,10 @@ namespace VfxControl.EditorTools
             // correct when out of sync so an in-progress drag isn't disturbed.
             if (_rateSlider != null && !Mathf.Approximately(_rateSlider.value, _effect.playRate))
                 _rateSlider.SetValueWithoutNotify(_effect.playRate);
+            RefreshDebugStats(); // no-ops unless the Debug stat grid is the current body
+            // Keep the Show Bounds checkbox reflecting the shared state when another window flips it.
+            if (_showBoundsToggle?.panel != null && _showBoundsToggle.value != ShowBounds)
+                _showBoundsToggle.SetValueWithoutNotify(ShowBounds);
         }
 
         void BuildPlaceholder(VisualElement body, string msg)
@@ -3758,6 +4272,8 @@ namespace VfxControl.EditorTools
 
         void OnSceneGui(SceneView sv)
         {
+            if (ShowBounds && _effect != null) DrawBoundsVisualizer();
+
             if (_gizmoStruct == null || _effect == null || _so == null) return;
             if (!_structLeaves.TryGetValue(_gizmoStruct, out var leaves) || leaves.Count == 0) return;
 

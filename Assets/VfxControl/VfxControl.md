@@ -22,6 +22,9 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   `GetExposedParameters(asset)` → `List<VfxExposedParam>`, `GetEventNames(asset)` →
   custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`), and
   `GetCustomAttributes(asset)` → the blackboard's custom attributes (`VFXGraph.customAttributes`).
+  Debug-tab profiling extras: `GetTextureUsage(asset)` (graph texture slots), `GetSystemAttributeWords(asset)`
+  (per-system attribute stride from `VFXDataParticle.GetCurrentAttributeLayout`), and the internal
+  `VisualEffect` CPU/GPU profiler **marker-name** helpers (`CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker`).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
   `SerializedObject` (undo/prefab/multi-edit safe).
 - **`VfxControlState.cs`** — persistence: favorites/collapsed/constrained per asset GUID
@@ -70,10 +73,10 @@ and degrades gracefully (empty list / no-op) if a member shifts.
   `VFXModel.children` property) and filtering to `VFXBasicEvent`; the built-in defaults are
   `VisualEffectAsset.PlayEventName`/`StopEventName` (= `OnPlay`/`OnStop`). The Component Board's
   `RecurseGetEventNames` also recurses `VFXSubgraphContext.subChildren` — we don't yet.
-- **Custom attributes** (blackboard): `VFXGraph.customAttributes` → `VFXCustomAttributeDescriptor`s,
-  each with `attributeName` (string) + `type` (`CustomAttributeUtility.Signature`). The Signature
-  enum order is **exactly** our payload type order — `Float,Vector2,Vector3,Vector4,Bool,Uint,Int`
-  (0..6) — so the ordinal maps 1:1 (`GetCustomAttributes` returns `(name, ordinal)`).
+  - **Custom attributes** (blackboard): `VFXGraph.customAttributes` → `VFXCustomAttributeDescriptor`s,
+    each with `attributeName` (string) + `type` (`CustomAttributeUtility.Signature`). The Signature
+    enum order is **exactly** our payload type order — `Float,Vector2,Vector3,Vector4,Bool,Uint,Int`
+    (0..6) — so the ordinal maps 1:1 (`GetCustomAttributes` returns `(name, ordinal)`).
 - **Type icons**: the blackboard's per-type icons live at
   `Packages/com.unity.visualeffectgraph/Editor/UIResources/VFX/types/<Name>@2x.png` —
   `Float`/`Vector2`/`Vector3`/`Vector4`/`Boolean`/`Integer` (+ `d_` dark variants; only `@2x` exists).
@@ -105,10 +108,21 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   which repopulates only tabs+chips+rail+body. **Search filters the active tab only**
   (`SearchMatches` for IMGUI/meta fields, `Visible` for properties). The **section rail**
   generalizes the old category rail: Properties→categories, Renderer→Probes/Additional,
-  Playback→"Playback options"/"Send Event", Debug→just "All" for now; selection is **per-tab** in `_sections` (packed into
+  Playback→"Playback options"/"Send Event"; Debug→"Live statistics"/"Systems"/"Visualizers"
+  (`DebugSections`); selection is **per-tab** in `_sections` (packed into
   `VfxControlState.Sections`, migrating the legacy `Category`). `CurrentSection()` returns
   "all" for tabs without a rail. The **All tab** (default) is a traditional inspector:
-  Properties+Renderer+Playback stacked with no rail (`BuildAllTab`), each under a **collapsible**
+  Properties+Renderer+Playback stacked with no rail (`BuildAllTab`). **Tab tear-off**: right-clicking
+  a focused tab (not "All") → **"Open in new window"** (`ContextualMenuManipulator` → `OpenSolo`)
+  spawns a second dockable `VfxControlWindow` via `CreateWindow<>` pinned to that one tab — a
+  `[SerializeField] _soloTab` (survives domain reload/restart) hides the tab strip (`PopulateTabs`
+  early-out) and forces `_tab` (clamped right after `_tab = _state.Tab` in `SetTarget`, so it follows
+  selection without ever writing the shared `_state.Tab`). A pop-out is **lean** — `Rebuild` drops the
+  Asset (meta) row + the transport bar + section gap when `_soloTab != null`, keeping just header +
+  chrome (search + chips) + rail + the one tab's body — and is a **passive observer**: `Tick` only
+  advances the playback clock when `_soloTab == null`, so multiple windows never fight over
+  `Reinit`/`pause` on the shared effect (the main window stays the transport's home). `Open` (the
+  menu) restores a solo instance to a full window if that's the only one focused. Each under a **collapsible**
   top-level header (`AddAllSection`, `.vfx-allsection-head` + `-title`/`-twirl`, collapse key
   `all:<title>`) that reads above the boxed category headers below it.
 - **Renderer tab**: the `VisualEffect` renders through a sibling **`VFXRenderer`**; this
@@ -345,6 +359,57 @@ Sphere/Circle/Torus variants work with no extra code).
   under the ★ filter when pinned. Both sections are `PlaybackSections` rail entries,
   rail-filterable like the Renderer tab's Probes/Additional. The transport itself is NOT in the
   tab — it lives once in the persistent top bar (see Playback above).
+- **Debug tab** (`BuildDebugTab`): four rail-filtered, collapsible `vfx-group` sections
+  (`AddDebugGroup`, collapse keys `debug:live`/`debug:systems`/`debug:textures`/`debug:visualizers`;
+  `DebugCollapseKeys`). The live counts are public runtime API; the **profiling extras** (CPU/GPU
+  timing markers, texture slots, attribute layout) are reached by reflection in `VfxGraphReflection`
+  and degrade to "—" gracefully:
+  - **Live statistics** — a 2-col `.vfx-stat-grid` of cells (`MakeStat` → uppercase `.vfx-stat-k` key +
+    `.vfx-stat-v` value + dim `.vfx-stat-u` unit; gridlines = the container border colour through each
+    cell's right/bottom border): **Alive particles** (Σ per-system `GetParticleSystemInfo(name).aliveCount`,
+    `/ capacity` unit; falls back to `aliveParticleCount` when no systems report), **Efficiency**
+    (alive/capacity %), **Systems** (`GetParticleSystemNames` count), **Bounds** (world-space
+    `Renderer.bounds.size` — `GetComputedBounds` is internal to the VFX editor asm, unusable here),
+    **State** (`culled`/`pause` → Culled/Paused/Playing), **CPU time** (whole-effect CPU eval ms),
+    **GPU time** (Σ system GPU ms; "—" unless `SystemInfo.supportsGpuRecorder`), **Attr memory** (total
+    attribute-buffer bytes; "—" until the graph layout is compiled).
+  - **Timing** comes from the profiler **`Recorder`**: marker names via reflection
+    (`VfxGraphReflection.CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker` → the *internal*
+    `VisualEffect.GetCPU…/GetGPUTaskMarkerName`). Gotcha: `GetCPUEffectMarkerName` is **not**
+    parameterless — it takes a `VisualEffect.VFXCPUEffectMarkers` enum; we pass **`FullUpdate`** (the
+    whole-effect CPU update). They're fed to public `Recorder.Get(name)` →
+    `elapsedNanoseconds` (CPU) / `gpuElapsedNanoseconds` (GPU). Recorders are created+enabled lazily,
+    cached in `_recorders` (keyed by marker, cleared on target change); GPU tasks are probed by index
+    until a marker comes back empty (`SumGpuMs`). Markers only emit while the effect updates (edit mode
+    works while it's playing/visible).
+  - **Attribute memory** = per-system stride × capacity × 4. The stride (words/particle) is
+    `VfxGraphReflection.GetSystemAttributeWords` (Σ of `VFXDataParticle.GetCurrentAttributeLayout()`
+    bucket sizes, mapped to system names via `VFXSystemNames.GetUniqueSystemName`) — the same layout
+    the VFX inspector shows under Preferences ▸ VFX ▸ "extra debug info". It's `[NonSerialized]`, so a
+    system is omitted (→ "—") until the graph compiles/opens. Cached in `_attrWords` per body build.
+  - **Systems** — per-system capacity bars (`BuildDebugSystems`, `.vfx-syslist`/`.vfx-sys`): name +
+    `alive / capacity` + a `.vfx-sys-fill` bar whose width = alive/capacity and whose colour follows the
+    VFX efficiency convention (`EfficiencyColor`, mirrors `VFXAnchoredProfilerUI.ComputeEfficiencyColor`:
+    `#ff2e2e` <51% under-used → `#e3a98b` <91% → `#00ff47` ≥91% well-utilised), plus a `.vfx-sys-detail`
+    line (`cpu … ms · gpu … ms · mem …`). Sleeping systems show "Sleeping" + dim (`.vfx-sys--sleeping`).
+    Rows cached in `_dbgSysRows` (order mirrors `_dbgSysNames`, name-checked) and refreshed in place.
+  - **Textures** — `BuildDebugTextures`: every texture wired into the graph (exposed or not), via
+    `VfxGraphReflection.GetTextureUsage` (walks each node's + blocks' `inputSlots`/sub-slots, reads
+    `VFXSlot.value as Texture`). Rows `name · resolution · size` (public `Profiler.GetRuntimeMemorySizeLong`),
+    biggest first, with a total; clicking pings the asset. Static per asset → no live refresh.
+  - **Visualizers** — `BuildDebugVisualizers`: a **Show Bounds** toggle row (`.vfx-toggle-row`, whole-row
+    clickable) → the `ShowBounds` property (read straight from `SessionState` `vfxctrl.showBounds`, **not
+    cached**, so it's shared across all windows) drives `DrawBoundsVisualizer` in `OnSceneGui` (world-space
+    `Renderer.bounds` wire cube, Repaint-gated like the gizmos). The checkbox (`_showBoundsToggle`)
+    resyncs in `UpdateLive` when another window (e.g. a torn-off Debug tab) flips it.
+    Spawn-icons/wireframe/motion-vectors are omitted (their VFX visualizers are internal).
+  - Live values refresh **in place** off the ~30fps clock: `RefreshDebugStats` (from `UpdateLive`) reads
+    each system once, feeding the grid, the per-system bars, **and** the All-tab teaser — each guarded on
+    its widgets' `.panel` so it no-ops for whichever isn't the current body (reusing `_dbgSysNames`).
+  - The **All tab** does NOT embed any of this (it gets heavy): `AddDebugShortcut` adds a non-folding
+    `.vfx-allsection-head--link` row — title + a live `_dbgTeaser` summary (`N live · M systems`) + a `→`
+    — that **jumps to the Debug tab** on click (so `all:Debug` is dropped from `TabCollapseKeys`).
+  - No fav/mod model yet (`ChipCounts` = 0).
 - **Multi-instance edit**: select several scene VFX sharing the asset → `_effects` + one
   `SerializedObject` each (`_sos`). Display reads the primary; **all writes go through
   `SetValueAll`/`ResetAll`** (per-object, by `m_Name` — index-safe, unlike a single
@@ -376,10 +441,12 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 ## Not done yet / ideas
 
 - Playback tab is built out (two-row top transport + Rate, Duration, Seed + Reseed, Reseed on
-  Play, Initial Event, Send Event section — see **Playback tab** above). Debug tab is a placeholder
-  (live stats, systems, visualizers — see handoff). Renderer tab is implemented (VFXRenderer
-  settings). Still TODO for Playback: a real scrubbable **timeline** widget (tick marks/
-  playhead) and live info/systems (shared with Debug).
+  Play, Initial Event, Send Event section — see **Playback tab** above). Debug tab is built out —
+  live **statistics grid** (incl. CPU/GPU ms + attribute memory) + per-system **capacity bars**
+  (with cpu/gpu/mem detail) + **Textures** usage + a **Show Bounds** visualizer (see **Debug tab**
+  above); still TODO: more visualizers (spawn icons/wireframe/motion vectors are internal) and a
+  fav/mod model. Renderer tab is implemented (VFXRenderer settings). Still TODO for Playback: a
+  real scrubbable **timeline** widget (tick marks/playhead) and live info/systems (shared with Debug).
 - **Generalized ★/Modified is implemented (Phase 2).** Filter chips work per active tab:
   favorites are **namespaced** (`prop:<name>` / `renderer:<m_Field>`; `IsFav`/`ToggleFav`/
   `FavKeyOf`, legacy bare keys migrated by `MigrateFavorites`). Renderer settings are
@@ -401,5 +468,5 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
   Plane, Cone/Sphere/Circle/Torus (+ Arc variants), OrientedBox, Transform.
 - Preset save (footer button is disabled).
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.
-- Meta (Asset) pin/modified; Debug-tab content + its fav/mod model
-  once those tabs gain real component settings.
+- Meta (Asset) pin/modified. Debug tab has stats grid (+ CPU/GPU/attr-memory) + per-system bars +
+  Textures + Show Bounds; a fav/mod model and more visualizers (internal VFX ones) are still TODO.
