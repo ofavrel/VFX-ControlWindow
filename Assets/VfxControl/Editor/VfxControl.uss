@@ -805,6 +805,69 @@
     border-top-color: var(--unity-colors-default-border);
 }
 
+/* ---- Debug tab: particle readback spreadsheet ---- */
+.vfx-particles-bar {
+    flex-direction: row;
+    align-items: center;
+    padding: 2px 2px 6px 2px;
+}
+.vfx-particles-ownerlabel {
+    font-size: 11px;
+    margin-right: 4px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-particles-owner {
+    width: 56px;
+    margin-right: 6px;
+}
+.vfx-particles-capture {
+    margin-right: 6px;
+}
+.vfx-particles-auto {
+    margin-right: 8px;
+}
+.vfx-particles-count {
+    flex-grow: 1;
+    -unity-text-align: middle-right;
+    font-size: 11px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-particles-table {
+    height: 280px;
+    border-width: 1px;
+    border-color: var(--unity-colors-default-border);
+    border-radius: 3px;
+}
+.vfx-particles-cell {
+    font-size: 11px;
+    -unity-text-align: middle-left;
+    color: var(--unity-colors-default-text);
+}
+.vfx-particles-colorcell {
+    flex-direction: row;
+    align-items: center;
+}
+.vfx-particles-swatch {
+    width: 12px;
+    height: 12px;
+    margin-right: 6px;
+    border-radius: 2px;
+    border-width: 1px;
+    border-color: var(--unity-colors-default-border);
+}
+
+/* generic help box (e.g. the particle-readback empty state) */
+.vfx-helpbox {
+    margin: 6px 2px;
+    padding: 8px 9px;
+    white-space: normal;
+    border-radius: 3px;
+    background-color: var(--unity-colors-default-background);
+    border-width: 1px;
+    border-color: var(--unity-colors-default-border);
+    color: var(--unity-colors-label-text);
+}
+
 /* ---- Debug tab: visualizer toggle rows ---- */
 .vfx-toggle-row {
     flex-direction: row;

@@ -10013,7 +10013,7 @@ MonoBehaviour:
   m_Description: 
   m_AttributeName: potyty
   m_Type: 2
-  m_IsExpanded: 1
+  m_IsExpanded: 0
 --- !u!114 &8926484042661616227
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -10053,14 +10053,14 @@ MonoBehaviour:
   m_UIIgnoredErrors: []
   m_Parent: {fileID: 114350483966674976}
   m_Children: []
-  m_UIPosition: {x: 2046, y: -496}
+  m_UIPosition: {x: 2168, y: -736}
   m_UICollapsed: 0
   m_UISuperCollapsed: 0
   m_InputSlots: []
   m_OutputSlots:
   - {fileID: 8926484042661616244}
   attribute: potyty
-  location: 0
+  location: 1
   mask: xyz
 --- !u!114 &8926484042661616244
 MonoBehaviour:

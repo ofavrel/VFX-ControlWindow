@@ -33,6 +33,10 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   Inspector-interop copy/paste.
 - **`VfxControl.uss`** — styling, bound to built-in `--unity-*` theme variables (only the
   category accent dots are a custom palette, set inline from C#).
+- **`Readback/VfxReadback.hlsl`** — opt-in sample include for the Debug ▸ Particles spreadsheet: a
+  Custom HLSL block points at it (Update context, **no inputs to wire**) and each particle atomically
+  appends (`InterlockedAdd` on a counter) its position+color into a shared global buffer, so any number
+  of instances of the asset never clobber each other; the window reads it back (see Debug tab below).
 
 ## Ground truth (verified against the VFX package source — do NOT re-guess)
 
@@ -410,6 +414,49 @@ Sphere/Circle/Torus variants work with no extra code).
     `VfxGraphReflection.GetTextureUsage` (walks each node's + blocks' `inputSlots`/sub-slots, reads
     `VFXSlot.value as Texture`). Rows `name · resolution · size` (public `Profiler.GetRuntimeMemorySizeLong`),
     biggest first, with a total; clicking pings the asset. Static per asset → no live refresh.
+  - **Particles** — `BuildDebugParticles`: an **opt-in per-particle attribute spreadsheet**
+    (`MultiColumnListView`: Instance · # · Position · Age · Color-swatch). VFX particles are GPU-only with
+    **no managed readback API**, so this uses the GraphicsBuffer readback pattern from Unity VFX dev Paul
+    Demeulenaere's [`vfx-readback`](https://github.com/PaulDemeulenaere/vfx-readback): the user
+    instruments the graph with a **Custom HLSL block** pointing at `Readback/VfxReadback.hlsl` (Update
+    context, function `VfxReadback(inout VFXAttributes, int instanceId)`) where each particle writes its
+    `position+color` into `_VfxReadbackBuffer` at a **stable slot = `instanceId*256 + particleId%256`**
+    **and stamps** `_VfxReadbackGen[slot]` with the current `_VfxReadbackGeneration`. **Per-instance
+    separation, SELECTED-only:** the user exposes an Int property named `VfxReadbackInstanceId` and wires
+    it to the block's `instanceId` input; `AssignReadbackInstanceIds` (~2 Hz — `SetInt` persists; forced
+    on selection change) gives the **selected** instances (`_effects`, sorted by `GetEntityId()`) ids
+    0..K-1, and `SetInt`s every *other* instance of the asset to `kReadbackMaxInstances` (out of range,
+    so the block skips it) — select one effect → see only it, select two → see both. Names are cached for
+    the **Instance** column. Unwired → the port defaults to 0 → one merged instance, no filtering (fine
+    for a single effect). The tool bumps the generation each frame and binds both buffers + the int
+    via `Shader.SetGlobalBuffer/Int` in `PumpReadback` — **bound for the whole window lifetime, not just
+    when the panel shows**, because the instrumented graph references the globals on every sim dispatch,
+    so leaving them unbound triggers `Property (_VfxReadbackGen) ... is not set` warnings. Only the
+    readback request is gated on the panel: throttled `AsyncGPUReadback` (~6 Hz Auto, or a manual
+    **Capture**) — gen buffer first (`OnReadbackGen` finds the latest generation present), then the data
+    buffer — and lists the slots stamped with that latest generation = the live particles this frame,
+    grouped by instance (dead particles stop re-stamping and drop out;
+    `OnReadbackGen`→`OnReadback`→`RefreshParticleTable`; helpbox when uninstrumented; count shows
+    `N · M instances`). **Stable rows** (an atomic-append ring was tried first but its slots advance
+    every frame → the list jumps and row counts are erratic; particleId is a stable address). **No
+    per-frame counter reset:** C#'s `PumpReadback` runs on `EditorApplication.update` while the VFX sim
+    runs on **repaint** (decoupled in the editor), so a per-frame reset outran the sim and read back empty
+    — the generation stamp is immune to that ordering. **The global-UAV path is CONFIRMED WORKING** in
+    Unity (a global `RWStructuredBuffer` bound via `Shader.SetGlobalBuffer` *is* visible to VFX compute
+    and writes persist) — so the exposed-buffer-parameter fallback (`VisualEffect.SetGraphicsBuffer`) is
+    not needed, kept only as a note.
+    **Why the instanceId must be wired (not automatic):** a Custom HLSL function receives only `att` + its
+    wired input ports (`CustomHLSL.BuildSource`), never the simulation kernel's locals or thread index,
+    and **no graph operator outputs a per-instance id** (`instanceActiveIndex` is computed from the
+    dispatch index inside `VFXInitInstancing`, kernel-local; System Seed isn't exposed to HLSL either). So
+    the only way to tell instances apart is the exposed-Int id set per-component via `SetInt`. The block
+    body is also guarded with
+    `#if defined(UNITY_COMPUTE_SHADER) || defined(SHADER_STAGE_COMPUTE)` because a Custom HLSL function is
+    compiled into **every** pass that includes it (incl. the output vertex/fragment passes, where UAV
+    writes aren't valid on Metal) though it only runs in the Update compute kernel. The block must be in
+    the **Update** context (not Initialize — Initialize fires only at particle birth, so the list would
+    be empty on frames with no spawn). Limits (debug snapshot): 256 particleIds × 16 instances; particleIds
+    `≥ 256` wrap within an instance and instances `≥ 16` are skipped. Buffers reused + disposed in `OnDisable`.
   - **Visualizers** — `BuildDebugVisualizers`: a **Show Bounds** toggle row (`.vfx-toggle-row`, whole-row
     clickable) → the `ShowBounds` property (read straight from `SessionState` `vfxctrl.showBounds`, **not
     cached**, so it's shared across all windows) drives `DrawBoundsVisualizer` in `OnSceneGui` (world-space
@@ -482,4 +529,8 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 - Preset save (footer button is disabled).
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.
 - Meta (Asset) pin/modified. Debug tab has stats grid (+ CPU/GPU/attr-memory) + per-system bars +
-  Textures + Show Bounds; a fav/mod model and more visualizers (internal VFX ones) are still TODO.
+  Textures + opt-in particle-readback spreadsheet + Show Bounds; a fav/mod model and more visualizers
+  (internal VFX ones) are still TODO. Particle readback **works** (global-UAV confirmed) but is
+  **position+color only** (the fixed layout has room for more) and **opt-in** (needs the Custom HLSL
+  block). Likely next: more attribute columns (velocity/size/alive/lifetime…), buffer clearing so
+  dead-particle slots don't linger, and a smoother authoring path (auto-insert the block / a subgraph).

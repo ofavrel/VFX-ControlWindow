@@ -96,6 +96,41 @@ namespace VfxControl.EditorTools
             set => SessionState.SetBool(kShowBoundsKey, value);
         }
 
+        // --- Particle attribute readback (opt-in; see Assets/VfxControl/Readback/VfxReadback.hlsl) ---
+        // The graph is instrumented (Custom HLSL block, one `instanceId` input) so each particle writes
+        // its position+color into a STABLE slot = instanceId*256 + particleId%256, plus a per-frame
+        // generation stamp. The window auto-assigns each VisualEffect of the asset a distinct instanceId
+        // via SetInt on the exposed `VfxReadbackInstanceId` property (if wired), so instances land in
+        // separate regions. We bump the generation each frame, AsyncGPUReadback the gen+data buffers, and
+        // show the slots stamped with the latest generation present (= live particles this frame),
+        // grouped by instance. Dead particles stop re-stamping and drop out.
+        const int kReadbackPerInstance = 256;    // particle slots per instance (matches the .hlsl)
+        const int kReadbackMaxInstances = 16;    // instance regions (matches the .hlsl)
+        const int kReadbackCap = kReadbackPerInstance * kReadbackMaxInstances; // total slots
+        const int kReadbackFloat4s = kReadbackCap * 2; // 2 float4 per particle (pos+age, color+alpha)
+        const string kReadbackInstanceProp = "VfxReadbackInstanceId"; // exposed Int the user wires to the block
+        static readonly int kReadbackBufferId = Shader.PropertyToID("_VfxReadbackBuffer");
+        static readonly int kReadbackGenId = Shader.PropertyToID("_VfxReadbackGen");
+        static readonly int kReadbackGenerationId = Shader.PropertyToID("_VfxReadbackGeneration");
+        GraphicsBuffer _readbackBuffer;          // reusable, created lazily, disposed in OnDisable
+        GraphicsBuffer _readbackGenBuffer;       // per-slot generation stamp
+        Vector4[] _readbackData;                 // last decoded raw contents (length kReadbackFloat4s)
+        uint[] _readbackGen;                     // last decoded per-slot generation stamps (length kReadbackCap)
+        uint _readbackMaxGen;                    // latest generation present in the last gen readback
+        int _readbackGeneration = 1;             // current frame id pushed to the shader (>=1; 0 = unwritten)
+        readonly string[] _readbackInstanceNames = new string[kReadbackMaxInstances]; // instanceId → GameObject name
+        readonly List<VisualEffect> _readbackSelected = new List<VisualEffect>(); // selected instances → ids 0..K-1
+        double _lastInstanceAssign;              // throttle for the SetInt instance-id assignment
+        readonly List<int> _readbackRows = new List<int>(); // slots stamped with _readbackMaxGen → table rows
+        int _readbackInstanceCount;              // distinct instances present in the last readback
+        bool _readbackPending;                   // an AsyncGPUReadback is in flight
+        bool _readbackAuto = true;               // continuous capture while the section is shown
+        bool _readbackCaptureOnce;               // a manual Capture was requested
+        double _lastReadbackReq;                 // throttle (~6 Hz)
+        MultiColumnListView _particleTable;
+        Label _readbackCountLabel;
+        VisualElement _readbackHelp;
+
         // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
         // _tab is pinned). Deliberately NOT [SerializeField] — a serialized solo flag bakes the lean
         // state into the saved window layout, so a torn-off window comes back lean every session and
@@ -225,6 +260,8 @@ namespace VfxControl.EditorTools
         void OnDisable()
         {
             StopProfiling(); // release the VFX profiling registration we requested for timing readouts
+            _readbackBuffer?.Dispose(); _readbackBuffer = null; // GPU readback buffer
+            _readbackGenBuffer?.Dispose(); _readbackGenBuffer = null; // per-slot generation buffer
             SavePayloads(); // OnDisable fires before a domain reload (and on close) — SessionState
                             // carries the payloads across recompiles, but drops them on editor restart.
             Undo.undoRedoPerformed -= OnUndoRedo;
@@ -347,6 +384,7 @@ namespace VfxControl.EditorTools
             _gizmoStruct = null; // gizmo target is invalid for a new component
             _recorders.Clear();  // marker names embed the old effect/system — drop stale Recorders
             _smoothNs.Clear();
+            _lastInstanceAssign = 0; // reassign readback instance ids immediately for the new selection
             _effect = effect;
 
             _effects.Clear();
@@ -563,6 +601,7 @@ namespace VfxControl.EditorTools
             new SectionDef { Id = "live", Label = "Live statistics" },
             new SectionDef { Id = "systems", Label = "Systems" },
             new SectionDef { Id = "textures", Label = "Textures" },
+            new SectionDef { Id = "particles", Label = "Particles" },
             new SectionDef { Id = "visualizers", Label = "Visualizers" },
         };
 
@@ -1176,6 +1215,8 @@ namespace VfxControl.EditorTools
                 AddDebugGroup(body, "systems", "Systems", BuildDebugSystems);
             if (InSection("textures"))
                 AddDebugGroup(body, "textures", "Textures", BuildDebugTextures);
+            if (InSection("particles"))
+                AddDebugGroup(body, "particles", "Particles", BuildDebugParticles);
             if (InSection("visualizers"))
                 AddDebugGroup(body, "visualizers", "Visualizers", BuildDebugVisualizers);
 
@@ -1390,6 +1431,236 @@ namespace VfxControl.EditorTools
                 SceneView.RepaintAll();
             });
             host.Add(row);
+        }
+
+        // ---- Particle attribute readback spreadsheet (opt-in) ------------------------------
+        // Requires the graph to be instrumented with a Custom HLSL block pointing at
+        // VfxReadback.hlsl (each particle atomically appends its position+color into a shared global
+        // buffer). We reset the counter, bind both buffers, AsyncGPUReadback them, and tabulate a flat
+        // list of all live particles across every instance of the asset (# · position · age · color).
+        void BuildDebugParticles(VisualElement host)
+        {
+            _particleTable = null;
+            _readbackCountLabel = null;
+            _readbackHelp = null;
+
+            // Controls: Capture · Auto · row count. No system id to pick — instances are read back
+            // automatically, partitioned by the VFX instancing system's instanceActiveIndex.
+            var bar = MakeElement("vfx-particles-bar");
+            var capture = new Button(() => _readbackCaptureOnce = true) { text = "Capture" };
+            capture.AddToClassList("vfx-particles-capture");
+            bar.Add(capture);
+            var auto = new Toggle("Auto") { value = _readbackAuto };
+            auto.AddToClassList("vfx-particles-auto");
+            auto.RegisterValueChangedCallback(e => _readbackAuto = e.newValue);
+            bar.Add(auto);
+            _readbackCountLabel = new Label();
+            _readbackCountLabel.AddToClassList("vfx-particles-count");
+            bar.Add(_readbackCountLabel);
+            host.Add(bar);
+
+            // The spreadsheet.
+            var table = new MultiColumnListView { showBoundCollectionSize = false };
+            table.AddToClassList("vfx-particles-table");
+            table.columns.Add(new Column
+            {
+                title = "Instance", width = 110, makeCell = () => MakeCell(),
+                bindCell = (e, i) =>
+                {
+                    int inst = _readbackRows[i] / kReadbackPerInstance;
+                    string nm = inst < _readbackInstanceNames.Length ? _readbackInstanceNames[inst] : null;
+                    ((Label)e).text = nm ?? inst.ToString();
+                }
+            });
+            table.columns.Add(new Column { title = "#", width = 44, makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = (_readbackRows[i] % kReadbackPerInstance).ToString() });
+            table.columns.Add(new Column
+            {
+                title = "Position", width = 190, makeCell = () => MakeCell(),
+                bindCell = (e, i) => { var p = _readbackData[_readbackRows[i] * 2]; ((Label)e).text = $"{p.x:0.###}, {p.y:0.###}, {p.z:0.###}"; }
+            });
+            table.columns.Add(new Column
+            {
+                title = "Age", width = 60, makeCell = () => MakeCell(),
+                bindCell = (e, i) => ((Label)e).text = $"{_readbackData[_readbackRows[i] * 2].w:0.##}"
+            });
+            table.columns.Add(new Column
+            {
+                title = "Color", width = 150, makeCell = MakeColorCell,
+                bindCell = (e, i) =>
+                {
+                    var c = _readbackData[_readbackRows[i] * 2 + 1];
+                    e.Q(className: "vfx-particles-swatch").style.backgroundColor = new Color(c.x, c.y, c.z, 1f);
+                    e.Q<Label>().text = $"{c.x:0.##}, {c.y:0.##}, {c.z:0.##}, {c.w:0.##}";
+                }
+            });
+            table.itemsSource = _readbackRows;
+            _particleTable = table;
+            host.Add(table);
+
+            // Empty / not-instrumented state.
+            _readbackHelp = MakeElement("vfx-helpbox");
+            _readbackHelp.Add(new Label(
+                "No readback data. Add a Custom HLSL block (function VfxReadback) pointing at " +
+                "Assets/VfxControl/Readback/VfxReadback.hlsl in this system's Update context. For separate " +
+                "per-instance rows, expose an Int property named VfxReadbackInstanceId and wire it to the " +
+                "block's instanceId input (the window auto-assigns ids). Only public APIs — see the docs."));
+            host.Add(_readbackHelp);
+
+            RefreshParticleTable();
+        }
+
+        static Label MakeCell()
+        {
+            var l = new Label();
+            l.AddToClassList("vfx-particles-cell");
+            return l;
+        }
+
+        static VisualElement MakeColorCell()
+        {
+            var row = MakeElement("vfx-particles-colorcell");
+            row.Add(MakeElement("vfx-particles-swatch"));
+            var l = new Label();
+            l.AddToClassList("vfx-particles-cell");
+            row.Add(l);
+            return row;
+        }
+
+        // Lazily (re)create the data + generation buffers, both zero-initialised (gen 0 = "never written").
+        void EnsureReadbackBuffer()
+        {
+            if (_readbackBuffer == null || !_readbackBuffer.IsValid())
+            {
+                _readbackBuffer?.Dispose();
+                _readbackBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, kReadbackFloat4s, 16);
+                _readbackBuffer.SetData(new Vector4[kReadbackFloat4s]);
+            }
+            if (_readbackGenBuffer == null || !_readbackGenBuffer.IsValid())
+            {
+                _readbackGenBuffer?.Dispose();
+                _readbackGenBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, kReadbackCap, sizeof(uint));
+                _readbackGenBuffer.SetData(new uint[kReadbackCap]);
+            }
+        }
+
+        // Only the SELECTED instances (_effects) get readable ids 0..K-1 via the exposed
+        // `VfxReadbackInstanceId` Int — every other VisualEffect of the asset is pushed out of range
+        // (id == kReadbackMaxInstances) so the instrumented block skips it and it never pollutes the
+        // regions we read. Select one effect → see only it; select two → see both. SetInt persists, so
+        // this is throttled (~2 Hz; forced to re-run on selection change via _lastInstanceAssign = 0).
+        // Stable id per effect by GetEntityId. Components without the property wired (HasInt false) can't
+        // be steered — they fall back to the port default (0); wire the property for the selection filter.
+        void AssignReadbackInstanceIds()
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (now - _lastInstanceAssign < 0.5 && _readbackInstanceNames[0] != null) return;
+            _lastInstanceAssign = now;
+            System.Array.Clear(_readbackInstanceNames, 0, _readbackInstanceNames.Length);
+
+            var asset = _effect.visualEffectAsset;
+            if (asset == null) return;
+
+            // Selected instances, sorted by entity id for a stable id assignment.
+            _readbackSelected.Clear();
+            foreach (var ve in _effects) if (ve != null) _readbackSelected.Add(ve);
+            if (_readbackSelected.Count == 0) _readbackSelected.Add(_effect);
+            _readbackSelected.Sort((a, b) => a.GetEntityId().CompareTo(b.GetEntityId()));
+
+            var idOf = new Dictionary<VisualEffect, int>();
+            for (int i = 0; i < _readbackSelected.Count && i < kReadbackMaxInstances; i++)
+            {
+                idOf[_readbackSelected[i]] = i;
+                _readbackInstanceNames[i] = _readbackSelected[i].name;
+            }
+
+            // Steer every instance of this asset: selected → its id; everything else → out of range.
+            foreach (var v in Object.FindObjectsByType<VisualEffect>(FindObjectsSortMode.None))
+            {
+                if (v.visualEffectAsset != asset || !v.HasInt(kReadbackInstanceProp)) continue;
+                v.SetInt(kReadbackInstanceProp, idOf.TryGetValue(v, out var id) ? id : kReadbackMaxInstances);
+            }
+        }
+
+        // Driven by Tick: bump the generation, keep the globals bound while the window is open, and
+        // issue throttled readbacks (continuous when Auto, or once per Capture click). particleId
+        // addressing + the generation stamp make the readback stable and independent of sim timing.
+        void PumpReadback()
+        {
+            if (_effect == null) return;
+            // Bind unconditionally while the window is open: the instrumented graph references these
+            // globals every time it simulates (the Custom HLSL block's buffers are declared in its
+            // kernels), so leaving them unbound when the Particles panel isn't showing triggers
+            // "Property (_VfxReadbackGen) ... is not set" warnings on dispatch. Binding is cheap.
+            EnsureReadbackBuffer();
+            if (++_readbackGeneration <= 0) _readbackGeneration = 1; // stay positive (0 = unwritten)
+            Shader.SetGlobalBuffer(kReadbackBufferId, _readbackBuffer);
+            Shader.SetGlobalBuffer(kReadbackGenId, _readbackGenBuffer);
+            Shader.SetGlobalInt(kReadbackGenerationId, _readbackGeneration);
+
+            // Only the readback REQUEST needs the spreadsheet on screen.
+            if (_particleTable?.panel == null) return;
+            AssignReadbackInstanceIds();
+            double now = EditorApplication.timeSinceStartup;
+            bool due = _readbackAuto && (now - _lastReadbackReq) > 0.15; // ~6 Hz
+            if ((_readbackCaptureOnce || due) && !_readbackPending)
+            {
+                _readbackCaptureOnce = false;
+                _lastReadbackReq = now;
+                _readbackPending = true;
+                AsyncGPUReadback.Request(_readbackGenBuffer, OnReadbackGen); // gen first, then data
+            }
+        }
+
+        // Decode the per-slot generation stamps, find the latest generation present, then chain the
+        // data readback. The latest generation = the most recently simulated frame's particles.
+        void OnReadbackGen(AsyncGPUReadbackRequest req)
+        {
+            if (req.hasError || _readbackGenBuffer == null || _readbackBuffer == null) { _readbackPending = false; return; }
+            var gen = req.GetData<uint>();
+            if (_readbackGen == null || _readbackGen.Length != gen.Length)
+                _readbackGen = new uint[gen.Length];
+            gen.CopyTo(_readbackGen);
+            _readbackMaxGen = 0;
+            for (int i = 0; i < _readbackGen.Length; i++)
+                if (_readbackGen[i] > _readbackMaxGen) _readbackMaxGen = _readbackGen[i];
+            AsyncGPUReadback.Request(_readbackBuffer, OnReadback);
+        }
+
+        void OnReadback(AsyncGPUReadbackRequest req)
+        {
+            _readbackPending = false;
+            if (req.hasError || _readbackBuffer == null) return;
+            var data = req.GetData<Vector4>();
+            if (_readbackData == null || _readbackData.Length != data.Length)
+                _readbackData = new Vector4[data.Length];
+            data.CopyTo(_readbackData);
+            RefreshParticleTable();
+        }
+
+        // Rows = the slots stamped with the latest generation present (the most recently simulated
+        // frame's particles); slots from older frames or never written are ignored. Iterating slots
+        // ascending yields rows already grouped instance-major then particleId.
+        void RefreshParticleTable()
+        {
+            if (_particleTable?.panel == null) return;
+            _readbackRows.Clear();
+            int prevInstance = -1;
+            _readbackInstanceCount = 0;
+            int cap = _readbackData != null ? Mathf.Min(kReadbackCap, _readbackData.Length / 2) : 0;
+            if (_readbackGen != null && _readbackMaxGen != 0)
+                for (int s = 0; s < cap && s < _readbackGen.Length; s++)
+                    if (_readbackGen[s] == _readbackMaxGen)
+                    {
+                        _readbackRows.Add(s);
+                        int instance = s / kReadbackPerInstance;
+                        if (instance != prevInstance) { _readbackInstanceCount++; prevInstance = instance; }
+                    }
+            _particleTable.RefreshItems();
+            bool empty = _readbackRows.Count == 0;
+            if (_readbackCountLabel != null)
+                _readbackCountLabel.text = $"{_readbackRows.Count} · {_readbackInstanceCount} instance{(_readbackInstanceCount == 1 ? "" : "s")}";
+            if (_readbackHelp != null) _readbackHelp.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
+            _particleTable.style.display = empty ? DisplayStyle.None : DisplayStyle.Flex;
         }
 
         // VFX efficiency convention (VFXAnchoredProfilerUI.ComputeEfficiencyColor): how well the
@@ -3372,7 +3643,7 @@ namespace VfxControl.EditorTools
         }
         static readonly string[] PlaybackCollapseKeys = { "play:options", "play:events" };
         static readonly string[] RendererCollapseKeys = { "render:probes", "render:additional" };
-        static readonly string[] DebugCollapseKeys = { "debug:live", "debug:systems", "debug:textures", "debug:visualizers" };
+        static readonly string[] DebugCollapseKeys = { "debug:live", "debug:systems", "debug:textures", "debug:particles", "debug:visualizers" };
 
         // The collapsible keys inside one All-tab section ("Properties"/"Playback"/"Renderer").
         IEnumerable<string> AllSectionCollapseKeys(string title)
@@ -4038,6 +4309,7 @@ namespace VfxControl.EditorTools
             }
 
             UpdateLive();
+            PumpReadback(); // keeps the readback globals bound; only requests data when the panel shows
         }
 
         void UpdateLive()
