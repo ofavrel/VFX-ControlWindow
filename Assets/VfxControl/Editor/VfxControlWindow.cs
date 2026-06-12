@@ -173,7 +173,8 @@ namespace VfxControl.EditorTools
         // Scene overlay (Debug ▸ Particles → Scene view): per-attribute "eye" toggles + a selected
         // particle drive a point + value box drawn at the particle's world position.
         readonly HashSet<string> _particleEyes = new HashSet<string>(); // eye-ON attributes, by RbAttr.Layout
-        int _particleSelSlot = -1;               // selected particle SLOT (stable; -1 = none)
+        readonly List<int> _particleSelSlots = new List<int>(); // selected particle SLOTs (stable; drives the overlay)
+        const int kMaxDebugParticles = 24;       // cap on simultaneously-overlaid particles (perf/clutter)
         int _readbackPosSpace;                   // sim space of the position-bearing system: 1 Local, else World/none
         VisualEffectAsset _readbackBufferAsset;  // asset whose data is currently in the shared buffer (wipe on change)
         const string kParticleEyesKeyPrefix = "vfxctrl.particleEyes."; // SessionState, per asset GUID
@@ -1537,11 +1538,12 @@ namespace VfxControl.EditorTools
             host.Add(bar);
 
             // The spreadsheet. Clicking a column header sorts by it (toggles asc/desc); the sort is
-            // re-applied on every readback so it sticks as the data refreshes. Single-row selection drives
-            // the Scene overlay (tracked by stable slot, see OnParticleSelectionChanged).
+            // re-applied on every readback so it sticks as the data refreshes. Multi-row selection drives
+            // the Scene overlay (tracked by stable slots, see OnParticleSelectionChanged; capped at
+            // kMaxDebugParticles). Ctrl/Shift-click to select several particles.
             var table = new MultiColumnListView { showBoundCollectionSize = false, sortingMode = ColumnSortingMode.Custom };
             table.columnSortingChanged += () => { SortReadbackRows(); table.RefreshItems(); };
-            table.selectionType = SelectionType.Single;
+            table.selectionType = SelectionType.Multiple;
             table.selectionChanged += _ => OnParticleSelectionChanged();
             table.AddToClassList("vfx-particles-table");
             table.columns.Add(new Column
@@ -1733,12 +1735,17 @@ namespace VfxControl.EditorTools
             eye?.EnableInClassList("vfx-eye--on", _particleEyes.Contains(attr.Layout));
         }
 
-        // Track the selection by stable SLOT (not row index): rows reorder on sort/refresh, so the slot
-        // keeps the overlay pinned to the same particle.
+        // Track the selection by stable SLOTs (not row indices): rows reorder on sort/refresh, so the
+        // slots keep the overlay pinned to the same particles. Capped at kMaxDebugParticles.
         void OnParticleSelectionChanged()
         {
-            int i = _particleTable != null ? _particleTable.selectedIndex : -1;
-            _particleSelSlot = (i >= 0 && i < _readbackRows.Count) ? _readbackRows[i] : -1;
+            _particleSelSlots.Clear();
+            if (_particleTable != null)
+                foreach (int i in _particleTable.selectedIndices)
+                {
+                    if (i >= 0 && i < _readbackRows.Count) _particleSelSlots.Add(_readbackRows[i]);
+                    if (_particleSelSlots.Count >= kMaxDebugParticles) break;
+                }
             SceneView.RepaintAll();
         }
 
@@ -1861,7 +1868,7 @@ namespace VfxControl.EditorTools
                 _readbackBufferAsset = asset;
                 _readbackGenBuffer.SetData(new uint[kReadbackCap]);
                 _readbackMaxGen = 0; _readbackGen = null; _readbackData = null;
-                _particleSelSlot = -1; _readbackRows.Clear();
+                _particleSelSlots.Clear(); _readbackRows.Clear();
                 if (_particleTable != null) { _particleTable.ClearSelection(); _particleTable.RefreshItems(); }
             }
 
@@ -1931,13 +1938,20 @@ namespace VfxControl.EditorTools
             SortReadbackRows(); // keep the user's chosen column sort applied across refreshes
             _particleTable.RefreshItems();
 
-            // Re-pin the selection highlight to the same particle (slot) after rows reorder; drop it if the
-            // particle died, and keep the Scene overlay live while a selection+eye is active.
-            if (_particleSelSlot >= 0)
+            // Re-pin the selection highlight to the same particles (by slot) after rows reorder; drop any
+            // that died, and keep the Scene overlay live while a selection+eye is active.
+            if (_particleSelSlots.Count > 0)
             {
-                int row = _readbackRows.IndexOf(_particleSelSlot);
-                if (row >= 0) _particleTable.SetSelectionWithoutNotify(new[] { row });
-                else { _particleSelSlot = -1; _particleTable.ClearSelection(); }
+                var rows = new List<int>();
+                var alive = new List<int>();
+                foreach (var slot in _particleSelSlots)
+                {
+                    int row = _readbackRows.IndexOf(slot);
+                    if (row >= 0) { rows.Add(row); alive.Add(slot); }
+                }
+                _particleSelSlots.Clear();
+                _particleSelSlots.AddRange(alive);
+                _particleTable.SetSelectionWithoutNotify(rows); // empty → clears the highlight
                 if (_particleEyes.Count > 0) SceneView.RepaintAll();
             }
 
@@ -4841,17 +4855,22 @@ namespace VfxControl.EditorTools
             return true;
         }
 
-        // Scene overlay: when a particle row is selected and ≥1 attribute "eye" is on, draw a dot at the
-        // particle's world position + a translucent box listing the eye-ON attributes' values.
+        // Scene overlay: for each selected (live) particle, when ≥1 attribute "eye" is on, draw a dot at
+        // the particle's world position + a translucent box listing the eye-ON attributes' values.
         void DrawParticleOverlay()
         {
-            if (_particleSelSlot < 0 || _particleEyes.Count == 0 || _readbackData == null) return;
-            if (!_readbackRows.Contains(_particleSelSlot)) return; // particle not live this generation
-            if (!TryGetParticleWorld(_particleSelSlot, out var world)) return;
+            if (_particleSelSlots.Count == 0 || _particleEyes.Count == 0 || _readbackData == null) return;
+            foreach (var slot in _particleSelSlots)
+                if (_readbackRows.Contains(slot)) // still live this generation
+                    DrawParticleMarker(slot);
+        }
+
+        void DrawParticleMarker(int slot)
+        {
+            if (!TryGetParticleWorld(slot, out var world)) return;
 
             // Dot stays a constant screen size for visibility; the value box is anchored to the particle's
-            // own world size (its Size attribute) so it sits right at the particle's upper-right edge
-            // instead of a fixed handle-size distance away.
+            // own world size (size · scale) so it sits at the particle's upper-right corner.
             float handle = HandleUtility.GetHandleSize(world);
             if (Event.current.type == EventType.Repaint)
             {
@@ -4866,7 +4885,7 @@ namespace VfxControl.EditorTools
             {
                 if (!_particleEyes.Contains(a.Layout)) continue;
                 if (sb.Length > 0) sb.Append('\n');
-                sb.Append(a.Title).Append(": ").Append(FormatRbCell(_particleSelSlot, a));
+                sb.Append(a.Title).Append(": ").Append(FormatRbCell(slot, a));
             }
             if (sb.Length == 0) return; // eyes are on attributes not present this asset
 
@@ -4877,9 +4896,9 @@ namespace VfxControl.EditorTools
             for (int k = 0; k < kReadbackAttrs.Length; k++)
             {
                 var a = kReadbackAttrs[k];
-                if (a.Layout == "size") pSize = RbVal(_particleSelSlot, a.Float);
+                if (a.Layout == "size") pSize = RbVal(slot, a.Float);
                 else if (a.Layout == "scaleX")
-                { sx = RbVal(_particleSelSlot, a.Float); sy = RbVal(_particleSelSlot, a.Float + 1); sz = RbVal(_particleSelSlot, a.Float + 2); }
+                { sx = RbVal(slot, a.Float); sy = RbVal(slot, a.Float + 1); sz = RbVal(slot, a.Float + 2); }
             }
             float half = 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
             Camera cam = Camera.current;

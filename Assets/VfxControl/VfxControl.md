@@ -470,10 +470,12 @@ Sphere/Circle/Torus variants work with no extra code).
     **Scene overlay:** each attribute column header is name + an "eye" toggle (`MakeAttrHeader`/`UpdateEyeVisual`
     via `Column.makeHeader`/`bindHeader`; `.vfx-eye` dim→`.vfx-eye--on` bright; eye state persisted per-asset
     in `SessionState`, default all-off; the eye `StopPropagation`s so it doesn't sort). The table is
-    `SelectionType.Single`; selection is tracked by stable **slot** (`OnParticleSelectionChanged` →
-    `_particleSelSlot`, re-pinned in `RefreshParticleTable` so it follows the particle across sort/refresh
-    and clears when it dies). When a row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`)
-    draws a `Handles.DotHandleCap` (constant screen size) + a translucent grey box (`DrawLabelBox`,
+    `SelectionType.Multiple` (Ctrl/Shift-click several particles, capped at `kMaxDebugParticles`=24);
+    selection is tracked by stable **slots** (`OnParticleSelectionChanged` → `_particleSelSlots`,
+    re-pinned in `RefreshParticleTable` so each follows its particle across sort/refresh and drops when it
+    dies). When ≥1 row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`) loops the
+    selected slots and per particle (`DrawParticleMarker`) draws a `Handles.DotHandleCap` (constant screen
+    size) + a translucent grey box (`DrawLabelBoxScreen`,
     refactored out of `GizmoLabel`) listing each eye-ON attribute's value at the particle's **world**
     position. The box's **bottom-left** is anchored to the particle's **upper-right corner** — the corner
     is `world + (camRight+camUp)·half`, `half = 0.5·|size|·max(|scaleX|,|scaleY|,|scaleZ|)` (size·scale,
