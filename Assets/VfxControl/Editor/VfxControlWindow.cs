@@ -411,7 +411,14 @@ namespace VfxControl.EditorTools
             BuildCategoryColorMap();        // rail dots + pinned cards need the color map
             root.Add(BuildChrome());        // search field + _chipsHost
 
-            _tabsHost = MakeElement("vfx-tabs");
+            // Horizontal ScrollView so the tab strip scrolls (wheel/drag) when the window is
+            // too narrow to show every tab, instead of clipping the trailing tabs.
+            var tabsScroll = new ScrollView(ScrollViewMode.Horizontal);
+            tabsScroll.AddToClassList("vfx-tabs");
+            tabsScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+            tabsScroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
+            AttachHScroll(tabsScroll);
+            _tabsHost = tabsScroll;
             root.Add(_tabsHost);
 
             _railContainer = MakeElement("vfx-rail-host");
@@ -439,13 +446,13 @@ namespace VfxControl.EditorTools
                 ChipCounts = PropertyChipCounts,
             },
             new TabDef { Id = "play", Label = "Playback", HasRail = true, Sections = PlaybackSections, Build = BuildPlaybackTab, ChipCounts = PlaybackChipCounts },
+            new TabDef { Id = "render", Label = "Renderer", HasRail = true, Sections = RendererSections, Build = BuildRendererTab, ChipCounts = RendererChipCounts },
             new TabDef
             {
                 Id = "debug", Label = "Debug", HasRail = true, Sections = NoSections,
                 Build = body => BuildPlaceholder(body, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."),
                 ChipCounts = () => (0, 0, 0),
             },
-            new TabDef { Id = "render", Label = "Renderer", HasRail = true, Sections = RendererSections, Build = BuildRendererTab, ChipCounts = RendererChipCounts },
         };
 
         (int leaf, int fav, int mod) PropertyChipCounts() => (
@@ -724,8 +731,23 @@ namespace VfxControl.EditorTools
         {
             // Use child Labels (not the Button's intrinsic text) so the label and the
             // count badge flow as flex items left-to-right instead of overlapping.
-            var tab = new Button(() => { _tab = id; _state.Tab = id; PopulateActiveTab(); });
+            // ClickEvent (not the Button action) so Alt is observable: Alt+click folds/unfolds
+            // the whole tab body in one go (like Alt+click on a category/struct header).
+            var tab = new Button();
             tab.AddToClassList("vfx-tab");
+            tab.tooltip = "Alt+click to expand/collapse all";
+            tab.RegisterCallback<ClickEvent>(e =>
+            {
+                if (e.altKey)
+                {
+                    var keys = TabCollapseKeys(id).ToList();
+                    bool collapse = keys.Any(k => !_collapsed.Contains(k)); // any open → collapse all
+                    SetCollapsedAll(keys, collapse);
+                    _state.SaveCollapsed(_collapsed);
+                }
+                _tab = id; _state.Tab = id;
+                PopulateActiveTab();
+            });
             if (_tab == id) tab.AddToClassList("vfx-tab--active");
             tab.Add(new Label(label));
             if (count >= 0)
@@ -1109,6 +1131,11 @@ namespace VfxControl.EditorTools
             return row;
         }
 
+        // Start Seed is meaningless when Reseed-on-Play is on (the seed is re-randomized each
+        // (re)start), so the control greys out to match. Mixed multi-edit → leave it editable
+        // (ambiguous, like the category gate treats mixed as enabled).
+        bool SeedLocked() => _effect != null && _effect.resetSeedOnPlay && !EffectsDiffer(ve => ve.resetSeedOnPlay);
+
         // Start Seed: an int field (clamped ≥ 0 → uint, like the uint property control) plus an
         // inline Reseed button that randomizes the seed and reinitializes the sim.
         (VisualElement control, Action sync) BuildStartSeedControl()
@@ -1120,6 +1147,9 @@ namespace VfxControl.EditorTools
             field.style.flexGrow = 1;
             field.RegisterValueChangedCallback(e =>
             {
+                // Locked by Reseed on Play — ignore edits (incl. label-drag, whose drag zone is
+                // the label outside this disabled wrap) and revert the display.
+                if (SeedLocked()) { field.SetValueWithoutNotify(_effect != null ? (int)_effect.startSeed : 0); return; }
                 SetStartSeed((uint)Mathf.Max(0, e.newValue));
                 RefreshPlaybackRows();
             });
@@ -1129,10 +1159,13 @@ namespace VfxControl.EditorTools
             reseed.AddToClassList("vfx-seed-reseed");
             wrap.Add(reseed);
 
+            wrap.SetEnabled(!SeedLocked()); // grey out while Reseed on Play overrides the seed
+
             return (wrap, () =>
             {
                 if (_effect != null) field.SetValueWithoutNotify((int)_effect.startSeed);
                 field.showMixedValue = EffectsDiffer(ve => ve.startSeed);
+                wrap.SetEnabled(!SeedLocked()); // re-evaluate live when Reseed on Play toggles
             });
         }
 
@@ -1874,6 +1907,7 @@ namespace VfxControl.EditorTools
             AddFavoriteGroup(body, includeProps: true, extraFavs);
 
             AddAllSection(body, "Properties", c => PopulateProperties(c, showEmpty: false));
+            AddAllSection(body, "Playback", BuildPlaybackContent); // favorites shown in the unified group above
             AddAllSection(body, "Renderer", c =>
             {
                 if (renderers.Length == 0)
@@ -1881,7 +1915,8 @@ namespace VfxControl.EditorTools
                 else
                     c.Add(BuildRendererSections(rendererSo, rendererFields));
             });
-            AddAllSection(body, "Playback", BuildPlaybackContent); // favorites shown in the unified group above
+            AddAllSection(body, "Debug", c =>
+                BuildPlaceholder(c, "Debug tab — coming in the next pass.\nLive stats, systems, visualizers."));
         }
 
         // A collapsible top-level section on the All tab: a header (twirl + title) over a content
@@ -1898,10 +1933,13 @@ namespace VfxControl.EditorTools
             var titleLbl = new Label(title);
             titleLbl.AddToClassList("vfx-allsection-title");
             header.Add(titleLbl);
-            header.tooltip = "Click to expand/collapse";
+            header.tooltip = "Click to expand/collapse · Alt+click for all nested";
             header.RegisterCallback<ClickEvent>(e =>
             {
-                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
+                bool collapse = !_collapsed.Contains(key); // the section's new state
+                if (collapse) _collapsed.Add(key); else _collapsed.Remove(key);
+                if (e.altKey) // fold/unfold every group inside this section to match
+                    SetCollapsedAll(AllSectionCollapseKeys(title), collapse);
                 _state.SaveCollapsed(_collapsed);
                 RebuildBodyOnly();
             });
@@ -2468,17 +2506,23 @@ namespace VfxControl.EditorTools
             foreach (var s in def.Sections())
                 rail.Add(MakeRailButton(s.Id, s.Label, s.Dot, !s.HasDot));
 
-            // vertical wheel scrolls horizontally when overflowing
-            rail.RegisterCallback<WheelEvent>(e =>
+            AttachHScroll(rail);
+            return rail;
+        }
+
+        // Make a horizontal ScrollView scroll on a vertical (or horizontal) wheel when its
+        // content overflows. Shared by the tab strip and the section rail.
+        static void AttachHScroll(ScrollView sv)
+        {
+            sv.RegisterCallback<WheelEvent>(e =>
             {
-                float content = rail.contentContainer.layout.width;
-                if (content <= rail.layout.width) return;
+                float content = sv.contentContainer.layout.width;
+                if (content <= sv.layout.width) return;
                 float d = Mathf.Abs(e.delta.x) > Mathf.Abs(e.delta.y) ? e.delta.x : e.delta.y;
                 if (Mathf.Approximately(d, 0)) return;
-                rail.scrollOffset = new Vector2(rail.scrollOffset.x + d * 18f, rail.scrollOffset.y);
+                sv.scrollOffset = new Vector2(sv.scrollOffset.x + d * 18f, sv.scrollOffset.y);
                 e.StopPropagation();
             });
-            return rail;
         }
 
         Button MakeRailButton(string id, string label, Color dot, bool isAll)
@@ -2744,6 +2788,56 @@ namespace VfxControl.EditorTools
             if (i < 0) yield break;
             for (int j = i + 1; j < _params.Count && _params[j].Depth > p.Depth; j++)
                 if (_params[j].IsStruct) yield return _params[j];
+        }
+
+        // ---- Alt+click "collapse/expand all" (All-tab sections + tab headers) ----
+        // Section-group collapse keys per content area (categories + structs for Properties,
+        // the fixed section-group keys for Playback/Renderer). Used to drive the whole
+        // hierarchy from a single Alt+click, like Alt+click on a category/struct header.
+        IEnumerable<string> PropertyCollapseKeys()
+        {
+            var seenCat = new HashSet<string>();
+            foreach (var p in _params)
+            {
+                if (p.IsStruct) yield return StructKey(p);
+                var c = CategoryOf(p);
+                if (seenCat.Add(c)) yield return c;
+            }
+        }
+        static readonly string[] PlaybackCollapseKeys = { "play:options", "play:events" };
+        static readonly string[] RendererCollapseKeys = { "render:probes", "render:additional" };
+
+        // The collapsible keys inside one All-tab section ("Properties"/"Playback"/"Renderer").
+        IEnumerable<string> AllSectionCollapseKeys(string title)
+        {
+            switch (title)
+            {
+                case "Properties": return PropertyCollapseKeys();
+                case "Playback": return PlaybackCollapseKeys;
+                case "Renderer": return RendererCollapseKeys;
+                default: return Enumerable.Empty<string>();
+            }
+        }
+
+        // Every collapsible key inside a tab's body (for Alt+click on the tab). The All tab
+        // also includes its own top-level section headers so the whole tree folds at once.
+        IEnumerable<string> TabCollapseKeys(string tabId)
+        {
+            switch (tabId)
+            {
+                case "props": return PropertyCollapseKeys();
+                case "play": return PlaybackCollapseKeys;
+                case "render": return RendererCollapseKeys;
+                case "all": return new[] { "all:Properties", "all:Playback", "all:Renderer", "all:Debug" }
+                    .Concat(PropertyCollapseKeys()).Concat(PlaybackCollapseKeys).Concat(RendererCollapseKeys);
+                default: return Enumerable.Empty<string>();
+            }
+        }
+
+        void SetCollapsedAll(IEnumerable<string> keys, bool collapse)
+        {
+            foreach (var k in keys)
+                if (collapse) _collapsed.Add(k); else _collapsed.Remove(k);
         }
 
         // A compound parent (e.g. AABox): a collapsible header with pin-all / reset-all

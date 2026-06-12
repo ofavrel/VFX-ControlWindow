@@ -11,12 +11,17 @@
 
 .vfx-scroll {
     flex-grow: 1;
+    /* default flex min-height is `auto`, so a very tall body (e.g. Alt+unfold-all on
+       Properties/All) would grow past the window and overlap the fixed top bars instead
+       of scrolling internally. Pin to 0 so the ScrollView stays within available space. */
+    min-height: 0;
 }
 
 /* ---- window header (EditorWindow draws its own) ---- */
 .vfx-header {
     flex-direction: row;
     align-items: center;
+    flex-shrink: 0;
     height: 24px;
     padding-left: 6px;
     padding-right: 6px;
@@ -39,6 +44,7 @@
 
 /* ---- asset / meta rows ---- */
 .vfx-meta {
+    flex-shrink: 0;
     padding: 6px 8px 4px 8px;
 }
 
@@ -61,6 +67,7 @@
 /* column wrapper: row 1 = scrub + time + live; row 2 = transport buttons + Rate. */
 .vfx-transport-wrap {
     flex-direction: column;
+    flex-shrink: 0; /* fixed top bar — never compress when the body is tall */
     background-color: var(--unity-colors-default-background);
     padding: 3px 0;
 }
@@ -138,6 +145,7 @@
 /* ---- recessed divider between asset/playback group and tabs group ---- */
 .vfx-section-gap {
     height: 9px;
+    flex-shrink: 0;
     background-color: var(--unity-colors-default-background);
     border-top-width: 1px;
     border-bottom-width: 1px;
@@ -149,13 +157,18 @@
 .vfx-tabs {
     flex-direction: row;
     height: 30px;
+    flex-shrink: 0;
     background-color: var(--unity-colors-toolbar-background);
     border-bottom-width: 1px;
     border-bottom-color: var(--unity-colors-toolbar-border);
 }
+.vfx-tabs > .unity-scroll-view__content-container {
+    flex-direction: row;
+}
 
 .vfx-tab {
     flex-direction: row;
+    flex-shrink: 0; /* keep natural width and overflow into scroll, don't compress */
     align-items: center;
     padding: 0 14px;
     font-size: 13px;
@@ -178,18 +191,18 @@
 }
 
 .vfx-tabcount {
-    margin-left: 6px;
-    padding: 0 5px;
-    border-radius: 8px;
+    margin-left: 4px;
     font-size: 11px;
-    background-color: var(--unity-colors-default-background);
     color: var(--unity-colors-label-text);
+    opacity: 0.7;
+    -unity-font-style: normal;
 }
 
 /* ---- sub bar: search + filter chips ---- */
 .vfx-subbar {
     flex-direction: row;
     align-items: center;
+    flex-shrink: 0; /* fixed top bar — never compress when the body is tall */
     flex-wrap: wrap; /* pills sit right normally, but drop below when very narrow */
     padding: 6px 8px;
     border-bottom-width: 1px;
@@ -241,10 +254,14 @@
 
 .vfx-fchip-n {
     margin-left: 4px;
+    font-size: 11px;
     opacity: 0.7;
 }
 
 /* ---- horizontal category rail ---- */
+.vfx-rail-host {
+    flex-shrink: 0; /* fixed top bar — never compress when the body is tall */
+}
 .vfx-hrail {
     flex-direction: row;
     padding: 6px 8px;
