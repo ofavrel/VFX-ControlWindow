@@ -24,8 +24,10 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   `GetCustomAttributes(asset)` → the blackboard's custom attributes (`VFXGraph.customAttributes`).
   Debug-tab profiling extras: `GetTextureUsage(asset)` (graph texture slots), `GetSystemAttributeWords(asset)`
   (per-system attribute stride from `VFXDataParticle.GetCurrentAttributeLayout`), `GetSystemAttributeLayout(asset)`
-  (the full per-system attribute list — name/type/words — from the same `BucketInfo[].attributes`), and the internal
-  `VisualEffect` CPU/GPU profiler **marker-name** helpers (`CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker`).
+  (the full per-system attribute list — name/type/words — from the same `BucketInfo[].attributes`),
+  `GetSystemSpaces(asset)` (per-system sim space 0/1/2 = None/Local/World from `VFXDataParticle.space`,
+  used to place the particle scene overlay), and the internal `VisualEffect` CPU/GPU profiler
+  **marker-name** helpers (`CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker`).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
   `SerializedObject` (undo/prefab/multi-edit safe).
 - **`VfxControlState.cs`** — persistence: favorites/collapsed/constrained per asset GUID
@@ -457,7 +459,18 @@ Sphere/Circle/Torus variants work with no extra code).
     grouped by instance (dead particles stop re-stamping and drop out;
     `OnReadbackGen`→`OnReadback`→`RefreshParticleTable`; helpbox when uninstrumented; count shows
     `N · M instances`). **Stable rows** (an atomic-append ring was tried first but its slots advance
-    every frame → the list jumps and row counts are erratic; particleId is a stable address). **No
+    every frame → the list jumps and row counts are erratic; particleId is a stable address).
+    **Scene overlay:** each attribute column header is name + an "eye" toggle (`MakeAttrHeader`/`UpdateEyeVisual`
+    via `Column.makeHeader`/`bindHeader`; `.vfx-eye` dim→`.vfx-eye--on` bright; eye state persisted per-asset
+    in `SessionState`, default all-off; the eye `StopPropagation`s so it doesn't sort). The table is
+    `SelectionType.Single`; selection is tracked by stable **slot** (`OnParticleSelectionChanged` →
+    `_particleSelSlot`, re-pinned in `RefreshParticleTable` so it follows the particle across sort/refresh
+    and clears when it dies). When a row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`)
+    draws a `Handles.DotHandleCap` + a translucent grey box (`DrawLabelBox`, refactored out of `GizmoLabel`)
+    listing each eye-ON attribute's value at the particle's **world** position. World position:
+    `TryGetParticleWorld` reads the stored position and, when the system sims in **Local** space
+    (`GetSystemSpaces`), transforms by the **owning instance's** `localToWorldMatrix` (owner =
+    `_readbackSelected[slot/256]`); World/unknown → as-is. Mixed multi-system spaces aren't disambiguated. **No
     per-frame counter reset:** C#'s `PumpReadback` runs on `EditorApplication.update` while the VFX sim
     runs on **repaint** (decoupled in the editor), so a per-frame reset outran the sim and read back empty
     — the generation stamp is immune to that ordering. **The global-UAV path is CONFIRMED WORKING** in

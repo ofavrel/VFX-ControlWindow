@@ -81,6 +81,7 @@ namespace VfxControl.EditorTools
         static Type s_ContextType, s_DataParticleType;
         static MethodInfo s_GetData;             // VFXData VFXContext.GetData()
         static MethodInfo s_GetCurrentLayout;    // BucketInfo[] VFXDataParticle.GetCurrentAttributeLayout()
+        static PropertyInfo s_DataSpaceProp;     // VFXSpace VFXDataParticle.space (None/Local/World)
         static FieldInfo s_BucketSizeField;      // int BucketInfo.size (resolved from the returned element type)
         static FieldInfo s_BucketAttribsField;   // VFXAttribute[] BucketInfo.attributes (per dword channel)
         static FieldInfo s_AttrNameField;        // string VFXAttribute.name
@@ -201,6 +202,7 @@ namespace VfxControl.EditorTools
                 s_DataParticleType = asm.GetType("UnityEditor.VFX.VFXDataParticle");
                 s_GetCurrentLayout = s_DataParticleType?.GetMethods(any)
                     .FirstOrDefault(m => m.Name == "GetCurrentAttributeLayout" && m.GetParameters().Length == 0);
+                s_DataSpaceProp = s_DataParticleType?.GetProperty("space", any); // VFXSpace (None/Local/World)
                 var sysNamesType = asm.GetType("UnityEditor.VFX.VFXSystemNames");
                 s_GetUniqueSystemName = sysNamesType?.GetMethods(any)
                     .FirstOrDefault(m => m.Name == "GetUniqueSystemName" && m.GetParameters().Length == 1);
@@ -686,6 +688,54 @@ namespace VfxControl.EditorTools
                 case "Boolean": return "bool";
                 default: return valueType?.ToString() ?? "?";
             }
+        }
+
+        /// Per-system simulation space, keyed by unique system name: 0 = None, 1 = Local, 2 = World
+        /// (mirrors the VFXSpace enum). Same source/iteration as GetSystemAttributeLayout
+        /// (VFXContext → GetData() → VFXDataParticle.space), so the keys align. Empty if the `space`
+        /// member can't be reached or the graph isn't compiled.
+        public static Dictionary<string, int> GetSystemSpaces(VisualEffectAsset asset)
+        {
+            var result = new Dictionary<string, int>();
+            if (asset == null) return result;
+            Resolve();
+            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
+                s_GetData == null || s_DataSpaceProp == null) return result;
+
+            try
+            {
+                if (!TryGetGraph(asset, out var graph)) return result;
+                var systemNames = s_SystemNamesProp?.GetValue(graph);
+                var seen = new HashSet<object>();
+                if (!(s_ChildrenProp.GetValue(graph) is IEnumerable children)) return result;
+                foreach (var child in children)
+                {
+                    if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
+                    object data;
+                    try { data = s_GetData.Invoke(child, null); } catch { continue; }
+                    if (data == null) continue;
+                    if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
+                    if (!seen.Add(data)) continue; // contexts share one data per system
+
+                    int space; // map the VFXSpace enum name to an ordinal we can use without the VFX type
+                    switch (s_DataSpaceProp.GetValue(data)?.ToString())
+                    {
+                        case "Local": space = 1; break;
+                        case "World": space = 2; break;
+                        default: space = 0; break; // None / unknown
+                    }
+
+                    string name = null;
+                    if (systemNames != null && s_GetUniqueSystemName != null)
+                        try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                    if (!string.IsNullOrEmpty(name)) result[name] = space;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read system spaces: {e.Message}");
+            }
+            return result;
         }
 
         // Profiler marker names on the runtime component (internal). Feed into UnityEngine.Profiling

@@ -170,6 +170,13 @@ namespace VfxControl.EditorTools
         Label _readbackCountLabel;
         VisualElement _readbackHelp;
 
+        // Scene overlay (Debug ▸ Particles → Scene view): per-attribute "eye" toggles + a selected
+        // particle drive a point + value box drawn at the particle's world position.
+        readonly HashSet<string> _particleEyes = new HashSet<string>(); // eye-ON attributes, by RbAttr.Layout
+        int _particleSelSlot = -1;               // selected particle SLOT (stable; -1 = none)
+        int _readbackPosSpace;                   // sim space of the position-bearing system: 1 Local, else World/none
+        const string kParticleEyesKeyPrefix = "vfxctrl.particleEyes."; // SessionState, per asset GUID
+
         // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
         // _tab is pinned). Deliberately NOT [SerializeField] — a serialized solo flag bakes the lean
         // state into the saved window layout, so a torn-off window comes back lean every session and
@@ -1528,9 +1535,12 @@ namespace VfxControl.EditorTools
             host.Add(bar);
 
             // The spreadsheet. Clicking a column header sorts by it (toggles asc/desc); the sort is
-            // re-applied on every readback so it sticks as the data refreshes.
+            // re-applied on every readback so it sticks as the data refreshes. Single-row selection drives
+            // the Scene overlay (tracked by stable slot, see OnParticleSelectionChanged).
             var table = new MultiColumnListView { showBoundCollectionSize = false, sortingMode = ColumnSortingMode.Custom };
             table.columnSortingChanged += () => { SortReadbackRows(); table.RefreshItems(); };
+            table.selectionType = SelectionType.Single;
+            table.selectionChanged += _ => OnParticleSelectionChanged();
             table.AddToClassList("vfx-particles-table");
             table.columns.Add(new Column
             {
@@ -1549,7 +1559,9 @@ namespace VfxControl.EditorTools
                 if (attr.Kind == RbKind.Color)
                     table.columns.Add(new Column
                     {
-                        title = attr.Title, width = 150, makeCell = MakeColorCell,
+                        title = attr.Title, width = 150,
+                        makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
+                        makeCell = MakeColorCell,
                         bindCell = (e, i) =>
                         {
                             int s = _readbackRows[i];
@@ -1562,7 +1574,9 @@ namespace VfxControl.EditorTools
                 else
                     table.columns.Add(new Column
                     {
-                        title = attr.Title, width = attr.Count == 3 ? 170 : 70, makeCell = () => MakeCell(),
+                        title = attr.Title, width = attr.Count == 3 ? 170 : 70,
+                        makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
+                        makeCell = () => MakeCell(),
                         bindCell = (e, i) => ((Label)e).text = FormatRbCell(_readbackRows[i], attr)
                     });
             }
@@ -1624,9 +1638,10 @@ namespace VfxControl.EditorTools
         void BuildReadbackColumns()
         {
             _readbackCols.Clear();
+            var asset = _effect != null ? _effect.visualEffectAsset : null;
             var present = new HashSet<string>();
-            if (_effect != null)
-                foreach (var kv in VfxGraphReflection.GetSystemAttributeLayout(_effect.visualEffectAsset))
+            if (asset != null)
+                foreach (var kv in VfxGraphReflection.GetSystemAttributeLayout(asset))
                     foreach (var f in kv.Value) present.Add(f.Name);
 
             foreach (var a in kReadbackAttrs)
@@ -1635,6 +1650,94 @@ namespace VfxControl.EditorTools
                                               : System.Array.IndexOf(kReadbackDefaultCols, a.Layout) >= 0;
                 if (show) _readbackCols.Add(a);
             }
+
+            // World position needs the position-bearing system's sim space (Local → transform by the
+            // owning instance; World/unknown → use as-is). Use the first system that stores `position`;
+            // multi-system assets with mixed spaces aren't disambiguated (the readback slot doesn't
+            // record its source system). Default World when unresolved (avoids a wrong double-transform).
+            _readbackPosSpace = 2; // World
+            if (asset != null)
+            {
+                var layout = VfxGraphReflection.GetSystemAttributeLayout(asset);
+                var spaces = VfxGraphReflection.GetSystemSpaces(asset);
+                foreach (var kv in layout)
+                    if (kv.Value.Exists(f => f.Name == "position") && spaces.TryGetValue(kv.Key, out int sp))
+                    { _readbackPosSpace = sp; break; }
+            }
+
+            LoadParticleEyes(asset);
+        }
+
+        // Eye state is persisted per asset GUID in SessionState (survives recompiles), default empty.
+        void LoadParticleEyes(VisualEffectAsset asset)
+        {
+            _particleEyes.Clear();
+            string guid = asset != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(asset)) : null;
+            if (string.IsNullOrEmpty(guid)) return;
+            string csv = SessionState.GetString(kParticleEyesKeyPrefix + guid, "");
+            if (csv.Length == 0) return;
+            foreach (var s in csv.Split(',')) if (s.Length > 0) _particleEyes.Add(s);
+        }
+
+        void SaveParticleEyes()
+        {
+            var asset = _effect != null ? _effect.visualEffectAsset : null;
+            string guid = asset != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(asset)) : null;
+            if (string.IsNullOrEmpty(guid)) return;
+            SessionState.SetString(kParticleEyesKeyPrefix + guid, string.Join(",", _particleEyes));
+        }
+
+        // Column header = attribute name + an "eye" toggle. When the eye is on, the selected particle's
+        // value for this attribute is drawn in the Scene overlay. The eye stops pointer propagation so it
+        // doesn't trigger the header's column sort.
+        VisualElement MakeAttrHeader(RbAttr attr)
+        {
+            var h = MakeElement("vfx-particles-header");
+            var name = new Label(attr.Title);
+            name.AddToClassList("vfx-particles-header-label");
+            h.Add(name);
+
+            var eye = new VisualElement { tooltip = "Show this attribute for the selected particle in the Scene view" };
+            eye.AddToClassList("vfx-iconbtn");
+            eye.AddToClassList("vfx-eye");
+            var ico = EditorGUIUtility.IconContent("animationvisibilitytoggleon")?.image;
+            if (ico != null)
+            {
+                var img = new Image { image = ico, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+                img.style.width = 14; img.style.height = 14;
+                eye.Add(img);
+            }
+            else
+            {
+                var g = new Label("◉") { pickingMode = PickingMode.Ignore }; // ◉ fallback glyph
+                eye.Add(g);
+            }
+            eye.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                evt.StopPropagation(); // don't sort the column
+                if (!_particleEyes.Remove(attr.Layout)) _particleEyes.Add(attr.Layout);
+                UpdateEyeVisual(h, attr);
+                SaveParticleEyes();
+                SceneView.RepaintAll();
+            });
+            h.Add(eye);
+            UpdateEyeVisual(h, attr);
+            return h;
+        }
+
+        void UpdateEyeVisual(VisualElement header, RbAttr attr)
+        {
+            var eye = header.Q(className: "vfx-eye");
+            eye?.EnableInClassList("vfx-eye--on", _particleEyes.Contains(attr.Layout));
+        }
+
+        // Track the selection by stable SLOT (not row index): rows reorder on sort/refresh, so the slot
+        // keeps the overlay pinned to the same particle.
+        void OnParticleSelectionChanged()
+        {
+            int i = _particleTable != null ? _particleTable.selectedIndex : -1;
+            _particleSelSlot = (i >= 0 && i < _readbackRows.Count) ? _readbackRows[i] : -1;
+            SceneView.RepaintAll();
         }
 
         // Read one float of a particle's record from the decoded buffer (stride kReadbackStride float4).
@@ -1797,7 +1900,7 @@ namespace VfxControl.EditorTools
             _readbackRows.Clear();
             int prevInstance = -1;
             _readbackInstanceCount = 0;
-            int cap = _readbackData != null ? Mathf.Min(kReadbackCap, _readbackData.Length / 2) : 0;
+            int cap = _readbackData != null ? Mathf.Min(kReadbackCap, _readbackData.Length / kReadbackStride) : 0;
             if (_readbackGen != null && _readbackMaxGen != 0)
                 for (int s = 0; s < cap && s < _readbackGen.Length; s++)
                     if (_readbackGen[s] == _readbackMaxGen)
@@ -1808,6 +1911,17 @@ namespace VfxControl.EditorTools
                     }
             SortReadbackRows(); // keep the user's chosen column sort applied across refreshes
             _particleTable.RefreshItems();
+
+            // Re-pin the selection highlight to the same particle (slot) after rows reorder; drop it if the
+            // particle died, and keep the Scene overlay live while a selection+eye is active.
+            if (_particleSelSlot >= 0)
+            {
+                int row = _readbackRows.IndexOf(_particleSelSlot);
+                if (row >= 0) _particleTable.SetSelectionWithoutNotify(new[] { row });
+                else { _particleSelSlot = -1; _particleTable.ClearSelection(); }
+                if (_particleEyes.Count > 0) SceneView.RepaintAll();
+            }
+
             bool empty = _readbackRows.Count == 0;
             if (_readbackCountLabel != null)
                 _readbackCountLabel.text = $"{_readbackRows.Count} · {_readbackInstanceCount} instance{(_readbackInstanceCount == 1 ? "" : "s")}";
@@ -4663,7 +4777,7 @@ namespace VfxControl.EditorTools
             VfxPropertySheet.GetValue(_so, leaf) is Vector3 v ? v : Vector3.zero;
 
         GUIStyle _gizmoLabelStyle;
-        Texture2D _gizmoLabelBg;
+        readonly Dictionary<Color, Texture2D> _labelBgCache = new Dictionary<Color, Texture2D>(); // one bg tex per color
 
         // A rounded-rect texture with a 1px feathered edge, for a 9-sliced label background.
         static Texture2D MakeRoundedTexture(int size, int radius, Color fill)
@@ -4692,6 +4806,50 @@ namespace VfxControl.EditorTools
             return tex;
         }
 
+        // World position of a particle slot: read its stored position, transform by the OWNING instance's
+        // transform when the system simulates in Local space, else use as-is. Owner = the selected instance
+        // that produced this slot's id; falls back to the primary effect.
+        bool TryGetParticleWorld(int slot, out Vector3 world)
+        {
+            world = default;
+            if (_readbackData == null) return false;
+            var p = new Vector3(RbVal(slot, 0), RbVal(slot, 1), RbVal(slot, 2));
+            int inst = slot / kReadbackPerInstance;
+            var owner = inst >= 0 && inst < _readbackSelected.Count ? _readbackSelected[inst] : _effect;
+            world = (_readbackPosSpace == 1 && owner != null) // 1 = Local
+                ? owner.transform.localToWorldMatrix.MultiplyPoint3x4(p)
+                : p;
+            return true;
+        }
+
+        // Scene overlay: when a particle row is selected and ≥1 attribute "eye" is on, draw a dot at the
+        // particle's world position + a translucent box listing the eye-ON attributes' values.
+        void DrawParticleOverlay()
+        {
+            if (_particleSelSlot < 0 || _particleEyes.Count == 0 || _readbackData == null) return;
+            if (!_readbackRows.Contains(_particleSelSlot)) return; // particle not live this generation
+            if (!TryGetParticleWorld(_particleSelSlot, out var world)) return;
+
+            float size = HandleUtility.GetHandleSize(world);
+            if (Event.current.type == EventType.Repaint)
+            {
+                var prev = Handles.color;
+                Handles.color = Color.white;
+                Handles.DotHandleCap(0, world, Quaternion.identity, size * 0.04f, EventType.Repaint);
+                Handles.color = prev;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var a in _readbackCols)
+            {
+                if (!_particleEyes.Contains(a.Layout)) continue;
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(a.Title).Append(": ").Append(FormatRbCell(_particleSelSlot, a));
+            }
+            if (sb.Length == 0) return; // eyes are on attributes not present this asset
+            DrawLabelBox(world, size, sb.ToString(), new Color(0.15f, 0.15f, 0.15f, 0.55f));
+        }
+
         // axis-colored components (X=red, Y=green, Z=blue) for rich-text scene labels
         static string FmtAxis(Vector3 v)
         {
@@ -4704,11 +4862,16 @@ namespace VfxControl.EditorTools
         // Draw a readable text label at the top-right of the gizmo's screen-space box
         // (a 2D box of `worldRadius` around `worldCenter`, ≈ the rotation gizmo size).
         void GizmoLabel(Vector3 worldCenter, float worldRadius, string text)
+            => DrawLabelBox(worldCenter, worldRadius, text, new Color(0.1f, 0.1f, 0.1f, 0.4f));
+
+        // Shared scene label: a translucent rounded box (color `bg`) + rich text at the top-right of the
+        // `worldRadius` screen box around `worldCenter`. One cached background texture per distinct color.
+        void DrawLabelBox(Vector3 worldCenter, float worldRadius, string text, Color bg)
         {
             if (Event.current.type != EventType.Repaint) return;
             const int radius = 6;
-            if (_gizmoLabelBg == null)
-                _gizmoLabelBg = MakeRoundedTexture(16, radius, new Color(0.1f, 0.1f, 0.1f, 0.4f));
+            if (!_labelBgCache.TryGetValue(bg, out var tex) || tex == null)
+                _labelBgCache[bg] = tex = MakeRoundedTexture(16, radius, bg);
             // fresh style (not a copy of helpBox) so richText reliably applies
             _gizmoLabelStyle ??= new GUIStyle
             {
@@ -4717,8 +4880,9 @@ namespace VfxControl.EditorTools
                 alignment = TextAnchor.UpperLeft,
                 padding = new RectOffset(6, 6, 4, 4),
                 border = new RectOffset(radius, radius, radius, radius), // 9-slice keeps the corners
-                normal = { textColor = Color.white, background = _gizmoLabelBg },
+                normal = { textColor = Color.white },
             };
+            _gizmoLabelStyle.normal.background = tex; // per-call: the style is shared across colors
 
             Handles.BeginGUI();
             Camera cam = Camera.current;
@@ -4757,6 +4921,7 @@ namespace VfxControl.EditorTools
         void OnSceneGui(SceneView sv)
         {
             if (ShowBounds && _effect != null) DrawBoundsVisualizer();
+            DrawParticleOverlay(); // selected-particle attribute values (independent of the gizmo block below)
 
             if (_gizmoStruct == null || _effect == null || _so == null) return;
             if (!_structLeaves.TryGetValue(_gizmoStruct, out var leaves) || leaves.Count == 0) return;

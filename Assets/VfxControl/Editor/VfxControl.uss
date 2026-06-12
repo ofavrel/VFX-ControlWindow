@@ -889,6 +889,30 @@
     border-color: var(--unity-colors-default-border);
 }
 
+/* attribute column header: name + an "eye" toggle that drives the Scene overlay */
+.vfx-particles-header {
+    flex-direction: row;
+    align-items: center;
+    flex-grow: 1;
+}
+.vfx-particles-header-label {
+    flex-grow: 1;
+    font-size: 11px;
+    -unity-text-align: middle-left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.vfx-eye {
+    flex-shrink: 0;
+    opacity: 0.3;             /* off (default) — dim */
+}
+.vfx-eye:hover {
+    opacity: 0.7;
+}
+.vfx-eye--on {
+    opacity: 1;               /* on — bright */
+}
+
 /* generic help box (e.g. the particle-readback empty state) */
 .vfx-helpbox {
     margin: 6px 2px;
