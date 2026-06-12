@@ -699,53 +699,90 @@
     margin-left: 3px;
 }
 
-/* Event payload editor (Send Event section): attribute list + "+ Attribute" dropdown. */
+/* Event payload editor (Send Event section): a bordered ListView with an integrated header +
+   the standard +/- footer (the VFX Event Tester look). */
 .vfx-payload {
-    margin-bottom: 4px;
+    margin: 2px 2px 4px 2px;
 }
-.vfx-payload-head {
-    flex-direction: row;
-    align-items: center;
-    margin: 2px 2px 3px 2px;
+.vfx-payload-list .unity-collection-view__item {
+    padding: 0;
 }
-.vfx-payload-title {
+.vfx-payload-list .unity-list-view__reorderable-item {
+    padding: 0;
+}
+.vfx-payload-itemhost {
     flex-grow: 1;
-    font-size: 11px;
-    opacity: 0.7;
+    justify-content: center;
 }
-.vfx-payload-add {
-    flex-shrink: 0;
-    height: 18px;
-    padding: 0 8px;
+/* empty-state message (makeNoneElement) */
+.vfx-payload-empty {
+    flex-grow: 1;
+    -unity-text-align: middle-center;
     font-size: 11px;
+    opacity: 0.5;
 }
 .vfx-payload-row {
     flex-direction: row;
     align-items: center;
-    margin-bottom: 2px;
 }
+/* fixed-width name column so built-in (dropdown) and custom (text field) rows align */
 .vfx-payload-name {
-    flex-grow: 1;
-    flex-shrink: 1;
-    min-width: 0;
-    margin: 0 2px 0 0;
+    flex-grow: 0;
+    flex-shrink: 0;
+    width: 92px;
+    margin: 0 8px 0 0;   /* breathing room before the type column */
 }
+/* built-in name: a button styled like a dropdown (left-aligned label + ▾ caret) */
+.vfx-payload-namebtn {
+    flex-direction: row;
+    align-items: center;
+    padding: 0 4px;
+}
+.vfx-payload-namebtn-label {
+    flex-grow: 1;
+    overflow: hidden;
+    -unity-text-align: middle-left;
+    text-overflow: ellipsis;
+}
+/* stale graph-custom name (renamed/deleted/retyped in the blackboard) */
+.vfx-payload-namebtn-label--warn {
+    color: rgb(235, 110, 90);
+}
+.vfx-payload-namebtn-caret {
+    flex-shrink: 0;
+    margin-left: 2px;
+    opacity: 0.6;
+    font-size: 9px;
+}
+/* type column = a single blackboard type icon (button when editable) */
 .vfx-payload-type {
     flex-shrink: 0;
-    width: 64px;
-    margin: 0 2px 0 0;
+    width: 30px;
+    margin: 0 8px 0 0;   /* breathing room before the value column */
+    align-items: center;
+    justify-content: center;
+}
+.vfx-payload-typebtn {
+    padding: 3px 2px;    /* vertical air so the icon isn't trapped top/bottom */
+    margin: 0 8px 0 0;
+}
+.vfx-payload-typeicon {
+    width: 16px;
+    height: 16px;
 }
 .vfx-payload-value {
     flex-grow: 1;
     flex-shrink: 1;
     min-width: 0;
-    margin: 0;
-}
-.vfx-payload-remove {
-    flex-shrink: 0;
-    margin-left: 1px;
+    margin: 0 2px 0 0;
 }
 
+/* Event buttons sit on a recessed dark band (like the rail / section bands). */
+.vfx-sendevent-band {
+    background-color: var(--unity-colors-default-background);
+    padding: 5px 6px 2px 6px;
+    margin-bottom: 6px;
+}
 /* Send Event section: the wrapping row of event chips (see AddSendEventSection / BuildEventChips). */
 .vfx-sendevent-chips {
     flex-direction: row;

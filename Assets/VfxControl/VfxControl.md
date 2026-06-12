@@ -6,7 +6,7 @@ denser, more controllable UI (the "Bold"/Variant C design from
 a `[CustomEditor]`, to avoid conflicting with the VFX package's own
 `AdvancedVisualEffectEditor`.
 
-- Unity **6000.6.0a2**, `com.unity.visualeffectgraph` **17.6.0**.
+- Unity **6000.6.0a2**, `com.unity.visualeffectgraph` **17.6.0**.th
 - Open via **`Window ▸ VFX Control`**. Diagnostic: **`Tools ▸ VFX Control ▸ Diagnose Target`**
   (logs how the selected/target VFX's exposed properties enumerate — keep for debugging).
 - All code is editor-only under `Assets/VfxControl/Editor/` (no asmdef → compiles into
@@ -19,8 +19,9 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   (search/chips/rail/groups/struct cards/rows), Renderer tab (sibling VFXRenderer settings), footer,
   copy-paste, scene-view gizmos, multi-edit.
 - **`VfxGraphReflection.cs`** — reflection bridge to the editor-internal VFX graph;
-  `GetExposedParameters(asset)` → `List<VfxExposedParam>`, and `GetEventNames(asset)` →
-  custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`).
+  `GetExposedParameters(asset)` → `List<VfxExposedParam>`, `GetEventNames(asset)` →
+  custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`), and
+  `GetCustomAttributes(asset)` → the blackboard's custom attributes (`VFXGraph.customAttributes`).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
   `SerializedObject` (undo/prefab/multi-edit safe).
 - **`VfxControlState.cs`** — persistence: favorites/collapsed/constrained per asset GUID
@@ -69,6 +70,15 @@ and degrades gracefully (empty list / no-op) if a member shifts.
   `VFXModel.children` property) and filtering to `VFXBasicEvent`; the built-in defaults are
   `VisualEffectAsset.PlayEventName`/`StopEventName` (= `OnPlay`/`OnStop`). The Component Board's
   `RecurseGetEventNames` also recurses `VFXSubgraphContext.subChildren` — we don't yet.
+- **Custom attributes** (blackboard): `VFXGraph.customAttributes` → `VFXCustomAttributeDescriptor`s,
+  each with `attributeName` (string) + `type` (`CustomAttributeUtility.Signature`). The Signature
+  enum order is **exactly** our payload type order — `Float,Vector2,Vector3,Vector4,Bool,Uint,Int`
+  (0..6) — so the ordinal maps 1:1 (`GetCustomAttributes` returns `(name, ordinal)`).
+- **Type icons**: the blackboard's per-type icons live at
+  `Packages/com.unity.visualeffectgraph/Editor/UIResources/VFX/types/<Name>@2x.png` —
+  `Float`/`Vector2`/`Vector3`/`Vector4`/`Boolean`/`Integer` (+ `d_` dark variants; only `@2x` exists).
+  Load via `AssetDatabase.LoadAssetAtPath<Texture2D>` (the path uses the package name, not the hashed
+  PackageCache folder). Used for the event-payload type column (`AttrTypeIcon`).
 
 ## VfxExposedParam model
 
@@ -273,14 +283,62 @@ Sphere/Circle/Torus variants work with no extra code).
   `VfxGraphReflection.GetEventNames` walks `VFXGraph.children` for `VFXBasicEvent` and reads its
   public `eventName` (mirrors `VFXComponentBoard.RecurseGetEventNames`; top-level only, no
   subgraph recursion yet). Above the chips, an **event-payload editor** (`BuildEventPayloadEditor`)
-  mirrors the package's **VFX Event Tester overlay** (`VFXEventTesterWindow`): a list of named/typed
-  attributes (`_eventPayload` of `EventAttr` {name, type ∈ Bool/Float/Vector2/Vector3/Color, value})
-  with name · type · value · ✕ rows and a **"+ Attribute"** `GenericMenu` of the Standard/Advanced/
-  Custom presets. Clicking a chip sends with the payload: a per-instance `VFXEventAttribute`
-  (`CreateVFXEventAttribute` + `SetBool/Float/Vector2/Vector3/Vector4`), then `Play(attrib)` /
-  `Stop(attrib)` for OnPlay/OnStop else `SendEvent(name, attrib)` — all **public runtime API, no
-  reflection**. The payload is window-session state (survives body rebuilds; value edits mutate in
-  place, add/remove/type changes `RebuildBodyOnly`). The section header
+  builds a `VFXEventAttribute` (modelled on the package's **VFX Event Tester overlay**, but reworked):
+  `_eventPayload` is a list of `EventAttr` {name, type, value, **BuiltIn**} rendered as name · type ·
+  value rows. **Event buttons (chips) sit on top, on a recessed dark band** (`vfx-sendevent-band`,
+  like the rail); the attribute list below. Rows live in a **bordered, reorderable `ListView`** styled
+  like the package's Event Tester — an **integrated foldout header** (`showFoldoutHeader` +
+  `headerTitle = "Event Attributes"`, so the title reads as part of the list) and the **standard +/-
+  footer** (`showAddRemoveFooter`, `reorderMode = Animated` drag handles, `selectionType = Single`,
+  `itemsSource = _eventPayload`). Empty → **`makeNoneElement`** shows a "List is Empty" message. Both
+  scrollers are **hidden** (no scrollbar; content stays wheel/drag-reachable) and the visible height is
+  **capped at `kPayloadMaxRows` = 12** (height = header + clamp(count,1,12)·row + footer). Reorder is
+  purely cosmetic (the payload is keyed by name). The
+  footer **`+` (`onAdd`)** opens a `GenericMenu` with exactly two entries — **Built-in Attribute**
+  (one submenu listing **all** standard attributes, grouped by a grayed section header
+  (`AddDisabledItem`) + `AddSeparator` between groups — **Basic Simulation / Advanced Simulation /
+  Rendering**, alphabetical within each — *not* three nested submenus; from `s_StdAttrs`/`s_StdSections`,
+  name+type+section sourced from `VFXAttributesManager` and the manual's Reference-Attributes page;
+  only those three settable sections, not System/Collision/Strip) and **Custom Attribute** (the
+  grouped built-in list is built by the shared **`AddStdAttrMenuItems`**). The **Custom Attribute**
+  entry lists the graph's own **blackboard custom attributes** (`VfxGraphReflection.GetCustomAttributes`,
+  prefilling a custom row with the graph's name + type) followed by a separator + **"New Custom
+  Attribute"** (a blank one); when the graph has none it collapses to a single direct "Custom
+  Attribute" item. A picked **graph custom** attribute becomes a `GraphCustom` row that — like a
+  built-in — uses a **name dropdown** (`ShowGraphCustomNameMenu`, the graph's custom list) + a
+  **grayed type** (so the name always matches a real graph attribute and the type can't be
+  mismatched); only the **New Custom Attribute** path gives a free text name + editable type. The
+  name dropdown button is the shared `MakeNameDropdown` (used by built-in + graph-custom rows).
+  A graph-custom row is **flagged stale** when the blackboard changes out from under it: each payload
+  build snapshots the graph's customs into `_graphCustomLookup`, and a row whose name is gone
+  (renamed/deleted) or whose type no longer matches gets a **⚠ + tinted name + explaining tooltip**
+  (`MakeNameDropdown(warn:true)`); nothing is auto-changed — the user reconciles via the name dropdown
+  (re-checked on the next section rebuild, since there's no live blackboard hook). The
+  footer **`-` (`onRemove`)** deletes the selected row (no per-row ✕). So the three row kinds:
+  **built-in** (`ShowBuiltinNameMenu`) and **graph-custom** (`ShowGraphCustomNameMenu`) both use a
+  **name dropdown** + a **disabled grayed type icon** (the name is constrained to a real list and the
+  type is fixed); a **free custom** row's name is a `TextField` and type a **clickable type icon**
+  (`ShowTypeMenu`) over **`EventAttrType` = Float/Vector2/Vector3/Vector4/Bool/Uint/Int**. The type
+  column shows the **VFX-Graph blackboard type icon** (`MakeAttrTypeControl`/`AttrTypeIcon` —
+  `Float/Vector2-4/Boolean/Integer`; Uint+Int → Integer). All row kinds share a **fixed-width name
+  column** (`vfx-payload-name`, 92px) + a 30px icon type column so they align, with 8px gaps between
+  name/type/value. Value control is by type — Toggle / Vector2-3-4, and
+  **Float/Int/Uint get a `FieldMouseDragger` so they drag-scrub** like the vector components; the
+  built-in **`color`** (a Vector3) is edited with a **`ColorField`** (HDR) that reads/writes the
+  Vector3 RGB, so it still sends via `SetVector3`. Clicking a chip sends
+  with the payload: a per-instance `VFXEventAttribute` (`CreateVFXEventAttribute` +
+  `SetBool/Int/Uint/Float/Vector2/Vector3/Vector4` by type), then `Play(attrib)` / `Stop(attrib)` for
+  OnPlay/OnStop else `SendEvent(name, attrib)` — all **public runtime API, no reflection**. **Color
+  gotcha**: the standard `color` attribute is a **Vector3 (RGB)**
+  (`VFXAttributesManager.Color = VFXValue.Constant(Vector3.one)`) — it's typed Vector3 here and sent
+  with `SetVector3`, so it passes; the package's own Event Tester uses `SetVector4` and therefore
+  **silently fails to pass `color`** (matches the repro). The payload is **scoped per VFX asset**
+  (`_payloadByAsset[guid]`; `SetTarget` swaps the active `_eventPayload` to the asset's list, so
+  different assets keep independent payloads and same-asset instances share one). It's **persisted in
+  `SessionState`** (`Save/LoadPayloads`, key `vfxctrl.payloads`, JSON via `EventAttrDTO`/`PayloadStoreDTO`
+  since `Value` is `object`) — saved in `OnDisable`, restored in `OnEnable` — so it **survives domain
+  reload/recompile but is cleared on editor restart**. Value edits mutate in place; add/remove/type/
+  name-swap `RebuildBodyOnly`. The section header
   carries a **★ pin** (`vfx-group-pin`, fav key `play:sendevent`) — favoriting the whole section
   surfaces it in the **Favorites group** as a labelled chips row (`BuildSendEventFavRow`); it
   counts as one extra leaf in `PlaybackChipCounts` (favoritable, never "modified"), and shows

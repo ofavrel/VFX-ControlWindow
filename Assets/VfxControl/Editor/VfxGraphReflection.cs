@@ -70,6 +70,10 @@ namespace VfxControl.EditorTools
         static FieldInfo s_fEventName;         // public string VFXBasicEvent.eventName
         static PropertyInfo s_ChildrenProp;    // IEnumerable<VFXModel> VFXModel.children
 
+        // Blackboard custom attributes: VFXGraph.customAttributes (VFXCustomAttributeDescriptor[]),
+        // each with attributeName + type (CustomAttributeUtility.Signature, 0..6 = Float..Int).
+        static PropertyInfo s_CustomAttrsProp;
+
         /// When true, GetExposedParameters logs each resolution/enumeration step.
         internal static bool Verbose;
 
@@ -85,7 +89,9 @@ namespace VfxControl.EditorTools
             return $"available={s_Available}, paramInfoType={(s_fSheetType != null)}, " +
                    $"getResource={s_GetResource != null}, getOrCreateGraph={s_GetOrCreateGraph != null}, " +
                    $"paramInfoField={s_ParameterInfoField != null}, buildInfo={s_BuildParameterInfo != null}, " +
-                   $"serializableGet={s_SerializableGet != null}";
+                   $"serializableGet={s_SerializableGet != null}, " +
+                   $"basicEventType={s_BasicEventType != null}, eventName={s_fEventName != null}, " +
+                   $"childrenProp={s_ChildrenProp != null}, customAttrsProp={s_CustomAttrsProp != null}";
         }
 
         static void Resolve()
@@ -162,6 +168,8 @@ namespace VfxControl.EditorTools
                 s_fEventName = s_BasicEventType?.GetField("eventName", any);
                 s_ChildrenProp = graphType.GetProperties(any)
                     .FirstOrDefault(p => p.Name == "children" && p.GetIndexParameters().Length == 0);
+
+                s_CustomAttrsProp = graphType.GetProperty("customAttributes", any);
 
                 s_Available = s_GetResource != null && s_GetOrCreateGraph != null &&
                               s_ParameterInfoField != null && s_fSheetType != null &&
@@ -356,6 +364,56 @@ namespace VfxControl.EditorTools
             }
 
             return result;
+        }
+
+        /// The custom attributes declared in the asset's graph (the blackboard's "Custom Attributes"),
+        /// as (name, typeIndex) where typeIndex is the `CustomAttributeUtility.Signature` ordinal
+        /// (0=Float,1=Vector2,2=Vector3,3=Vector4,4=Bool,5=Uint,6=Int). Empty if unreachable.
+        public static List<(string name, int type)> GetCustomAttributes(VisualEffectAsset asset)
+        {
+            var result = new List<(string, int)>();
+            if (asset == null) return result;
+
+            Resolve();
+            if (!s_Available || s_CustomAttrsProp == null) return result;
+
+            try
+            {
+                var resource = s_GetResource.Invoke(null, new object[] { asset });
+                if (resource == null) return result;
+                var graph = s_GetOrCreateGraph.Invoke(null, new[] { resource });
+                if (graph == null) return result;
+
+                if (s_CustomAttrsProp.GetValue(graph) is IEnumerable items)
+                {
+                    foreach (var d in items)
+                    {
+                        if (d == null) continue;
+                        var name = ReadMember(d, "attributeName", "m_AttributeName") as string;
+                        var typeObj = ReadMember(d, "type", "m_Type");
+                        if (string.IsNullOrEmpty(name) || typeObj == null) continue;
+                        int type = Convert.ToInt32(typeObj); // Signature enum → ordinal
+                        if (!result.Exists(x => x.Item1 == name)) result.Add((name, type));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read custom attributes: {e.Message}");
+            }
+
+            return result;
+        }
+
+        // Read a member by property name (preferred) or serialized field name (fallback).
+        static object ReadMember(object obj, string prop, string field)
+        {
+            const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            var t = obj.GetType();
+            var p = t.GetProperty(prop, any);
+            if (p != null) return p.GetValue(obj);
+            var f = t.GetField(field, any);
+            return f?.GetValue(obj);
         }
     }
 }
