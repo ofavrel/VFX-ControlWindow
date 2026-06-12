@@ -103,9 +103,12 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   **chrome** (search + filter chips, shared across tabs) → **tabs** (All/Properties/
   Playback/Debug/Renderer) → **section rail** (per-tab) → body → **footer**
   (`{n} edited · seed {n}` + Reset all). The window is **selection-driven** like an
-  inspector: `RefreshTarget` mirrors the current scene selection (single or multi-VFX
-  sharing one asset) and drops the target when the selection isn't an editable scene
-  VFX — it never edits an asset/prefab-asset (guarded by `EditorUtility.IsPersistent`).
+  inspector: `RefreshTarget` follows the current scene selection (single or multi-VFX
+  sharing one asset) and never edits an asset/prefab-asset (guarded by
+  `EditorUtility.IsPersistent`). It is **sticky** — when the selection isn't an editable
+  scene VFX it KEEPS the last selected instance (so clicking around the scene/Inspector/VFX
+  Graph editor doesn't blank the window); it only falls back to the guidance hint when no
+  live effect exists yet or the previous target was destroyed (`_effect` reads Unity-null).
   There is no manual target field.
 - **Tabs / chrome / rail architecture**: each tab is a `TabDef` (id/label/badge/`HasRail`/
   `Sections`/`Build`), assembled by `BuildTabDefs`. `Rebuild` builds the chrome **once**
@@ -446,9 +449,13 @@ Sphere/Circle/Torus variants work with no extra code).
     separation, SELECTED-only:** the user exposes an Int property named `VfxReadbackInstanceId` and wires
     it to the block's `instanceId` input; `AssignReadbackInstanceIds` (~2 Hz — `SetInt` persists; forced
     on selection change) gives the **selected** instances (`_effects`, sorted by `GetEntityId()`) ids
-    0..K-1, and `SetInt`s every *other* instance of the asset to `kReadbackMaxInstances` (out of range,
-    so the block skips it) — select one effect → see only it, select two → see both. Names are cached for
-    the **Instance** column. Unwired → the port defaults to 0 → one merged instance, no filtering (fine
+    0..K-1, and `SetInt`s every *other* instrumented instance **in the scene (any asset, not just this
+    one)** to `kReadbackMaxInstances` (out of range, so the block skips it) — select one effect → see only
+    it, select two → see both. Steering all assets (not just the current one) is what prevents a
+    previously-selected *different* asset's instances from leaking into the list (the buffer is a
+    scene-global resource). On an asset switch `PumpReadback` also wipes the gen buffer + decoded caches
+    (tracked via `_readbackBufferAsset`) so nothing from the old asset lingers. Names are cached for the
+    **Instance** column. Unwired → the port defaults to 0 → one merged instance, no filtering (fine
     for a single effect). The tool bumps the generation each frame and binds both buffers + the int
     via `Shader.SetGlobalBuffer/Int` in `PumpReadback` — **bound for the whole window lifetime, not just
     when the panel shows**, because the instrumented graph references the globals on every sim dispatch,
@@ -466,8 +473,13 @@ Sphere/Circle/Torus variants work with no extra code).
     `SelectionType.Single`; selection is tracked by stable **slot** (`OnParticleSelectionChanged` →
     `_particleSelSlot`, re-pinned in `RefreshParticleTable` so it follows the particle across sort/refresh
     and clears when it dies). When a row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`)
-    draws a `Handles.DotHandleCap` + a translucent grey box (`DrawLabelBox`, refactored out of `GizmoLabel`)
-    listing each eye-ON attribute's value at the particle's **world** position. World position:
+    draws a `Handles.DotHandleCap` (constant screen size) + a translucent grey box (`DrawLabelBox`,
+    refactored out of `GizmoLabel`) listing each eye-ON attribute's value at the particle's **world**
+    position. The box's **bottom-left** is anchored to the particle's **upper-right corner** — the corner
+    is `world + (camRight+camUp)·half`, `half = 0.5·|size|·max(|scaleX|,|scaleY|,|scaleZ|)` (size·scale,
+    defaults size≈0.1 / scale=1), so the box scales with the particle and sits just past its edge. Shared
+    `DrawLabelBoxScreen(anchor, text, bg, bottomLeft)` places the box by a chosen corner (gizmo labels use
+    top-left; the overlay uses bottom-left → box grows up-and-right). World position:
     `TryGetParticleWorld` reads the stored position and, when the system sims in **Local** space
     (`GetSystemSpaces`), transforms by the **owning instance's** `localToWorldMatrix` (owner =
     `_readbackSelected[slot/256]`); World/unknown → as-is. Mixed multi-system spaces aren't disambiguated. **No

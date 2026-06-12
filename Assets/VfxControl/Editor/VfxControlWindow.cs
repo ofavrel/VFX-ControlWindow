@@ -175,6 +175,7 @@ namespace VfxControl.EditorTools
         readonly HashSet<string> _particleEyes = new HashSet<string>(); // eye-ON attributes, by RbAttr.Layout
         int _particleSelSlot = -1;               // selected particle SLOT (stable; -1 = none)
         int _readbackPosSpace;                   // sim space of the position-bearing system: 1 Local, else World/none
+        VisualEffectAsset _readbackBufferAsset;  // asset whose data is currently in the shared buffer (wipe on change)
         const string kParticleEyesKeyPrefix = "vfxctrl.particleEyes."; // SessionState, per asset GUID
 
         // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
@@ -390,11 +391,12 @@ namespace VfxControl.EditorTools
                 return;
             }
 
-            // The selection isn't a scene Visual Effect. The window mirrors the
-            // current selection (like an inspector), so drop the target and surface
-            // guidance — there's no manual target field to fall back on.
+            // The selection isn't a scene Visual Effect. Stay STICKY on the last selected instance so
+            // clicking around (scene, Inspector, VFX Graph editor) to tweak values doesn't blank the
+            // window. Only drop to guidance when there's no live effect to keep — nothing has been
+            // selected yet this session, or the previous target was destroyed (`_effect` reads Unity-null).
+            if (_effect != null) { _selectionHint = null; return; }
             _selectionHint = hint;
-            if (_effect != null) SetTarget(null);
         }
 
         // All selected scene VisualEffects sharing the primary's asset (primary first),
@@ -1827,10 +1829,13 @@ namespace VfxControl.EditorTools
                 _readbackInstanceNames[i] = _readbackSelected[i].name;
             }
 
-            // Steer every instance of this asset: selected → its id; everything else → out of range.
+            // Steer EVERY instrumented instance in the scene (any asset, not just the current one): the
+            // readback buffer is a scene-global resource, so a different asset's instance left at a low id
+            // would keep writing into the regions we read and mix into the list. Selected → its id;
+            // everything else (including other assets) → out of range so its block skips the write.
             foreach (var v in Object.FindObjectsByType<VisualEffect>(FindObjectsSortMode.None))
             {
-                if (v.visualEffectAsset != asset || !v.HasInt(kReadbackInstanceProp)) continue;
+                if (v == null || !v.HasInt(kReadbackInstanceProp)) continue;
                 v.SetInt(kReadbackInstanceProp, idOf.TryGetValue(v, out var id) ? id : kReadbackMaxInstances);
             }
         }
@@ -1846,6 +1851,20 @@ namespace VfxControl.EditorTools
             // kernels), so leaving them unbound when the Particles panel isn't showing triggers
             // "Property (_VfxReadbackGen) ... is not set" warnings on dispatch. Binding is cheap.
             EnsureReadbackBuffer();
+
+            // Switching to a different asset: the shared buffer still holds the previous asset's records
+            // and generation stamps. Wipe the gen buffer + decoded caches so nothing from the old asset
+            // lingers in the list while the new instances start writing.
+            var asset = _effect.visualEffectAsset;
+            if (asset != _readbackBufferAsset)
+            {
+                _readbackBufferAsset = asset;
+                _readbackGenBuffer.SetData(new uint[kReadbackCap]);
+                _readbackMaxGen = 0; _readbackGen = null; _readbackData = null;
+                _particleSelSlot = -1; _readbackRows.Clear();
+                if (_particleTable != null) { _particleTable.ClearSelection(); _particleTable.RefreshItems(); }
+            }
+
             if (++_readbackGeneration <= 0) _readbackGeneration = 1; // stay positive (0 = unwritten)
             Shader.SetGlobalBuffer(kReadbackBufferId, _readbackBuffer);
             Shader.SetGlobalBuffer(kReadbackGenId, _readbackGenBuffer);
@@ -4830,12 +4849,15 @@ namespace VfxControl.EditorTools
             if (!_readbackRows.Contains(_particleSelSlot)) return; // particle not live this generation
             if (!TryGetParticleWorld(_particleSelSlot, out var world)) return;
 
-            float size = HandleUtility.GetHandleSize(world);
+            // Dot stays a constant screen size for visibility; the value box is anchored to the particle's
+            // own world size (its Size attribute) so it sits right at the particle's upper-right edge
+            // instead of a fixed handle-size distance away.
+            float handle = HandleUtility.GetHandleSize(world);
             if (Event.current.type == EventType.Repaint)
             {
                 var prev = Handles.color;
                 Handles.color = Color.white;
-                Handles.DotHandleCap(0, world, Quaternion.identity, size * 0.04f, EventType.Repaint);
+                Handles.DotHandleCap(0, world, Quaternion.identity, handle * 0.04f, EventType.Repaint);
                 Handles.color = prev;
             }
 
@@ -4847,7 +4869,24 @@ namespace VfxControl.EditorTools
                 sb.Append(a.Title).Append(": ").Append(FormatRbCell(_particleSelSlot, a));
             }
             if (sb.Length == 0) return; // eyes are on attributes not present this asset
-            DrawLabelBox(world, size, sb.ToString(), new Color(0.15f, 0.15f, 0.15f, 0.55f));
+
+            // Anchor the box's bottom-left to the particle's upper-right corner, where the corner is the
+            // particle's half-extent (size · scale) offset toward the camera's right + up. size defaults
+            // to ~0.1 and scale to 1 when the system doesn't use them (VFX attribute defaults).
+            float pSize = 0.1f, sx = 1f, sy = 1f, sz = 1f;
+            for (int k = 0; k < kReadbackAttrs.Length; k++)
+            {
+                var a = kReadbackAttrs[k];
+                if (a.Layout == "size") pSize = RbVal(_particleSelSlot, a.Float);
+                else if (a.Layout == "scaleX")
+                { sx = RbVal(_particleSelSlot, a.Float); sy = RbVal(_particleSelSlot, a.Float + 1); sz = RbVal(_particleSelSlot, a.Float + 2); }
+            }
+            float half = 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
+            Camera cam = Camera.current;
+            Vector3 cr = cam != null ? cam.transform.right : Vector3.right;
+            Vector3 cu = cam != null ? cam.transform.up : Vector3.up;
+            Vector2 corner = HandleUtility.WorldToGUIPoint(world + (cr + cu) * half); // upper-right corner
+            DrawLabelBoxScreen(corner, sb.ToString(), new Color(0.15f, 0.15f, 0.15f, 0.55f), bottomLeft: true);
         }
 
         // axis-colored components (X=red, Y=green, Z=blue) for rich-text scene labels
@@ -4862,11 +4901,20 @@ namespace VfxControl.EditorTools
         // Draw a readable text label at the top-right of the gizmo's screen-space box
         // (a 2D box of `worldRadius` around `worldCenter`, ≈ the rotation gizmo size).
         void GizmoLabel(Vector3 worldCenter, float worldRadius, string text)
-            => DrawLabelBox(worldCenter, worldRadius, text, new Color(0.1f, 0.1f, 0.1f, 0.4f));
+        {
+            if (Event.current.type != EventType.Repaint) return;
+            Camera cam = Camera.current;
+            Vector2 center = HandleUtility.WorldToGUIPoint(worldCenter);
+            Vector2 edge = HandleUtility.WorldToGUIPoint(worldCenter + (cam != null ? cam.transform.right : Vector3.right) * worldRadius);
+            float r = Mathf.Max(8f, Vector2.Distance(center, edge)); // gizmo's screen radius
+            // sits to the upper-right of the gizmo box, anchored by the label's top-left corner
+            DrawLabelBoxScreen(new Vector2(center.x + r, center.y - r), text, new Color(0.1f, 0.1f, 0.1f, 0.4f), bottomLeft: false);
+        }
 
-        // Shared scene label: a translucent rounded box (color `bg`) + rich text at the top-right of the
-        // `worldRadius` screen box around `worldCenter`. One cached background texture per distinct color.
-        void DrawLabelBox(Vector3 worldCenter, float worldRadius, string text, Color bg)
+        // Shared scene label: a translucent rounded box (color `bg`) + rich text whose top-left
+        // (bottomLeft=false) or bottom-left (bottomLeft=true → box grows upward) corner is placed at the
+        // GUI-space point `anchor`. One cached background texture per distinct color.
+        void DrawLabelBoxScreen(Vector2 anchor, string text, Color bg, bool bottomLeft)
         {
             if (Event.current.type != EventType.Repaint) return;
             const int radius = 6;
@@ -4885,13 +4933,10 @@ namespace VfxControl.EditorTools
             _gizmoLabelStyle.normal.background = tex; // per-call: the style is shared across colors
 
             Handles.BeginGUI();
-            Camera cam = Camera.current;
-            Vector2 center = HandleUtility.WorldToGUIPoint(worldCenter);
-            Vector2 edge = HandleUtility.WorldToGUIPoint(worldCenter + (cam != null ? cam.transform.right : Vector3.right) * worldRadius);
-            float r = Mathf.Max(8f, Vector2.Distance(center, edge)); // gizmo's screen radius
             var content = new GUIContent(text);
             Vector2 sz = _gizmoLabelStyle.CalcSize(content);
-            GUI.Label(new Rect(center.x + r, center.y - r, sz.x, sz.y), content, _gizmoLabelStyle);
+            float y = bottomLeft ? anchor.y - sz.y : anchor.y;
+            GUI.Label(new Rect(anchor.x, y, sz.x, sz.y), content, _gizmoLabelStyle);
             Handles.EndGUI();
         }
 
