@@ -23,7 +23,8 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`), and
   `GetCustomAttributes(asset)` → the blackboard's custom attributes (`VFXGraph.customAttributes`).
   Debug-tab profiling extras: `GetTextureUsage(asset)` (graph texture slots), `GetSystemAttributeWords(asset)`
-  (per-system attribute stride from `VFXDataParticle.GetCurrentAttributeLayout`), and the internal
+  (per-system attribute stride from `VFXDataParticle.GetCurrentAttributeLayout`), `GetSystemAttributeLayout(asset)`
+  (the full per-system attribute list — name/type/words — from the same `BucketInfo[].attributes`), and the internal
   `VisualEffect` CPU/GPU profiler **marker-name** helpers (`CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker`).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
   `SerializedObject` (undo/prefab/multi-edit safe).
@@ -410,18 +411,36 @@ Sphere/Circle/Torus variants work with no extra code).
     `#ff2e2e` <51% under-used → `#e3a98b` <91% → `#00ff47` ≥91% well-utilised), plus a `.vfx-sys-detail`
     line (`cpu … ms · gpu … ms · mem …`). Sleeping systems show "Sleeping" + dim (`.vfx-sys--sleeping`).
     Rows cached in `_dbgSysRows` (order mirrors `_dbgSysNames`, name-checked) and refreshed in place.
+    Each row also gets a collapsible **attribute-layout foldout** (`BuildAttrLayoutFoldout`) — the full
+    stored attribute layout in buffer order (`name · type · per-particle bytes`, header `Layout · N attrs
+    · X B/particle`), the breakdown behind the `mem` number. Source: `GetSystemAttributeLayout` walks the
+    same `VFXDataParticle.GetCurrentAttributeLayout()` `BucketInfo[]` as the memory stat but reads each
+    bucket's `attributes` (VFXAttribute[] per dword channel), counting channels per attribute for its
+    word size and reading `VFXAttribute.name` / `.type`. Static per compiled asset (built once, no live
+    refresh); empty until the graph is compiled/opened.
   - **Textures** — `BuildDebugTextures`: every texture wired into the graph (exposed or not), via
     `VfxGraphReflection.GetTextureUsage` (walks each node's + blocks' `inputSlots`/sub-slots, reads
     `VFXSlot.value as Texture`). Rows `name · resolution · size` (public `Profiler.GetRuntimeMemorySizeLong`),
     biggest first, with a total; clicking pings the asset. Static per asset → no live refresh.
   - **Particles** — `BuildDebugParticles`: an **opt-in per-particle attribute spreadsheet**
-    (`MultiColumnListView`: Instance · # · Position · Age · Color-swatch). VFX particles are GPU-only with
-    **no managed readback API**, so this uses the GraphicsBuffer readback pattern from Unity VFX dev Paul
-    Demeulenaere's [`vfx-readback`](https://github.com/PaulDemeulenaere/vfx-readback): the user
-    instruments the graph with a **Custom HLSL block** pointing at `Readback/VfxReadback.hlsl` (Update
-    context, function `VfxReadback(inout VFXAttributes, int instanceId)`) where each particle writes its
-    `position+color` into `_VfxReadbackBuffer` at a **stable slot = `instanceId*256 + particleId%256`**
-    **and stamps** `_VfxReadbackGen[slot]` with the current `_VfxReadbackGeneration`. **Per-instance
+    (`MultiColumnListView`: Instance · # · then **one column per attribute the system actually uses**).
+    Columns are **driven by the graph layout**: `BuildReadbackColumns` takes the curated `kReadbackAttrs`
+    set (position/velocity/direction/color/age/lifetime/alpha/size/targetPosition/mass/scale/texIndex/
+    angle/alive/angularVelocity/particleId/pivot — offsets matching the .hlsl record) and keeps only those
+    present in the union of `GetSystemAttributeLayout` across systems (falls back to position/age/color/
+    alpha when the graph isn't compiled). Headers are click-sortable (`ColumnSortingMode.Custom` →
+    `SortReadbackRows`/`ParticleSortKey`; float3 sorts by magnitude, Color by luminance; re-applied on
+    every readback). The Color swatch is `.gamma`-corrected to match the on-screen particle; numeric text
+    stays raw linear. VFX particles are GPU-only with **no managed readback API**, so this uses the
+    GraphicsBuffer readback pattern from Unity VFX dev Paul Demeulenaere's
+    [`vfx-readback`](https://github.com/PaulDemeulenaere/vfx-readback): the user instruments the graph
+    with a **Custom HLSL block** pointing at `Readback/VfxReadback.hlsl` (Update or Output context,
+    function `VfxReadback(inout VFXAttributes, int instanceId)`) which writes a **fixed superset record**
+    (`kReadbackStride`=9 float4/particle — see the .hlsl packing) into `_VfxReadbackBuffer` at a **stable
+    slot = `instanceId*256 + particleId%256`** **and stamps** `_VfxReadbackGen[slot]` with the current
+    `_VfxReadbackGeneration`. Reading an attribute the system doesn't write yields its default and does
+    NOT enter the stored layout, so unused attributes simply don't get a column (their buffer slots hold
+    harmless defaults). Custom (user) attributes aren't captured — the record is a fixed standard set. **Per-instance
     separation, SELECTED-only:** the user exposes an Int property named `VfxReadbackInstanceId` and wires
     it to the block's `instanceId` input; `AssignReadbackInstanceIds` (~2 Hz — `SetInt` persists; forced
     on selection change) gives the **selected** instances (`_effects`, sorted by `GetEntityId()`) ids
@@ -450,13 +469,14 @@ Sphere/Circle/Torus variants work with no extra code).
     and **no graph operator outputs a per-instance id** (`instanceActiveIndex` is computed from the
     dispatch index inside `VFXInitInstancing`, kernel-local; System Seed isn't exposed to HLSL either). So
     the only way to tell instances apart is the exposed-Int id set per-component via `SetInt`. The block
-    body is also guarded with
-    `#if defined(UNITY_COMPUTE_SHADER) || defined(SHADER_STAGE_COMPUTE)` because a Custom HLSL function is
-    compiled into **every** pass that includes it (incl. the output vertex/fragment passes, where UAV
-    writes aren't valid on Metal) though it only runs in the Update compute kernel. The block must be in
-    the **Update** context (not Initialize — Initialize fires only at particle birth, so the list would
-    be empty on frames with no spawn). Limits (debug snapshot): 256 particleIds × 16 instances; particleIds
-    `≥ 256` wrap within an instance and instances `≥ 16` are skipped. Buffers reused + disposed in `OnDisable`.
+    works in **either the Update or the Output context** — it does plain `RWStructuredBuffer` writes (no
+    UAV atomics, no kernel-only locals like `instanceActiveIndex`), which compile and run in both the
+    compute kernel and the output vertex/fragment passes. **Do NOT re-add a `UNITY_COMPUTE_SHADER` guard**
+    (an earlier version had one for the since-removed `instanceActiveIndex`/`InterlockedAdd`; it silently
+    disabled the Output-context use — block in Output → body compiled out → list never updates). Avoid the
+    **Initialize** context (fires only at particle birth → empty on frames with no spawn). Limits (debug
+    snapshot): 256 particleIds × 16 instances; particleIds `≥ 256` wrap within an instance and instances
+    `≥ 16` are skipped. Buffers reused + disposed in `OnDisable`.
   - **Visualizers** — `BuildDebugVisualizers`: a **Show Bounds** toggle row (`.vfx-toggle-row`, whole-row
     clickable) → the `ShowBounds` property (read straight from `SessionState` `vfxctrl.showBounds`, **not
     cached**, so it's shared across all windows) drives `DrawBoundsVisualizer` in `OnSceneGui` (world-space

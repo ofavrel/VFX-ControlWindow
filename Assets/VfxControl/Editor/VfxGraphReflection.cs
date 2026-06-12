@@ -82,6 +82,9 @@ namespace VfxControl.EditorTools
         static MethodInfo s_GetData;             // VFXData VFXContext.GetData()
         static MethodInfo s_GetCurrentLayout;    // BucketInfo[] VFXDataParticle.GetCurrentAttributeLayout()
         static FieldInfo s_BucketSizeField;      // int BucketInfo.size (resolved from the returned element type)
+        static FieldInfo s_BucketAttribsField;   // VFXAttribute[] BucketInfo.attributes (per dword channel)
+        static FieldInfo s_AttrNameField;        // string VFXAttribute.name
+        static PropertyInfo s_AttrTypeProp;      // VFXValueType VFXAttribute.type
         static PropertyInfo s_SystemNamesProp;   // VFXSystemNames VFXGraph.systemNames
         static MethodInfo s_GetUniqueSystemName; // string VFXSystemNames.GetUniqueSystemName(VFXData)
         // Texture usage: walk slot containers' inputSlots + sub-slots, read VFXSlot.value as Texture
@@ -588,6 +591,101 @@ namespace VfxControl.EditorTools
                 Debug.LogWarning($"[VFX Control] Failed to read attribute layout: {e.Message}");
             }
             return result;
+        }
+
+        /// One stored attribute of a system: display name, friendly type, and its size in 32-bit words.
+        public readonly struct VfxAttrField
+        {
+            public readonly string Name; public readonly string Type; public readonly int Words;
+            public VfxAttrField(string name, string type, int words) { Name = name; Type = type; Words = words; }
+        }
+
+        /// The full per-system attribute layout (every stored attribute, in buffer order), keyed by
+        /// unique system name. Same source as GetSystemAttributeWords (VFXDataParticle's current
+        /// attribute layout, BucketInfo[].attributes) — the breakdown behind the "mem" stat. Empty for a
+        /// system until its graph has been compiled/opened this session (the layout is [NonSerialized]).
+        public static Dictionary<string, List<VfxAttrField>> GetSystemAttributeLayout(VisualEffectAsset asset)
+        {
+            var result = new Dictionary<string, List<VfxAttrField>>();
+            if (asset == null) return result;
+            Resolve();
+            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
+                s_GetData == null || s_GetCurrentLayout == null) return result;
+
+            try
+            {
+                if (!TryGetGraph(asset, out var graph)) return result;
+                var systemNames = s_SystemNamesProp?.GetValue(graph);
+                var seen = new HashSet<object>();
+                if (!(s_ChildrenProp.GetValue(graph) is IEnumerable children)) return result;
+                foreach (var child in children)
+                {
+                    if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
+                    object data;
+                    try { data = s_GetData.Invoke(child, null); } catch { continue; }
+                    if (data == null) continue;
+                    if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
+                    if (!seen.Add(data)) continue; // contexts share one data per system
+
+                    if (!(s_GetCurrentLayout.Invoke(data, null) is Array buckets) || buckets.Length == 0) continue;
+                    var elem = buckets.GetType().GetElementType();
+                    if (s_BucketAttribsField == null) s_BucketAttribsField = elem?.GetField("attributes", InstanceAny);
+                    if (s_BucketAttribsField == null) continue;
+
+                    // Each bucket's "attributes" array has one entry per dword channel (the same
+                    // VFXAttribute repeated across the channels it spans). Count channels per attribute,
+                    // preserving first-seen buffer order, and skip null padding slots.
+                    var fields = new List<VfxAttrField>();
+                    var indexOf = new Dictionary<string, int>();
+                    foreach (var b in buckets)
+                    {
+                        if (!(s_BucketAttribsField.GetValue(b) is Array attrs)) continue;
+                        foreach (var a in attrs)
+                        {
+                            if (a == null) continue;
+                            if (s_AttrNameField == null) s_AttrNameField = a.GetType().GetField("name", InstanceAny);
+                            if (s_AttrTypeProp == null) s_AttrTypeProp = a.GetType().GetProperty("type", InstanceAny);
+                            var nm = s_AttrNameField?.GetValue(a) as string;
+                            if (string.IsNullOrEmpty(nm)) continue;
+                            if (indexOf.TryGetValue(nm, out int at))
+                                fields[at] = new VfxAttrField(nm, fields[at].Type, fields[at].Words + 1);
+                            else
+                            {
+                                string ty = FriendlyAttrType(s_AttrTypeProp?.GetValue(a));
+                                indexOf[nm] = fields.Count;
+                                fields.Add(new VfxAttrField(nm, ty, 1));
+                            }
+                        }
+                    }
+                    if (fields.Count == 0) continue;
+
+                    string name = null;
+                    if (systemNames != null && s_GetUniqueSystemName != null)
+                        try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                    if (!string.IsNullOrEmpty(name)) result[name] = fields;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VFX Control] Failed to read attribute layout detail: {e.Message}");
+            }
+            return result;
+        }
+
+        // VFXValueType enum (boxed) → a short friendly type name.
+        static string FriendlyAttrType(object valueType)
+        {
+            switch (valueType?.ToString())
+            {
+                case "Float": return "float";
+                case "Float2": return "float2";
+                case "Float3": return "float3";
+                case "Float4": return "float4";
+                case "Int32": return "int";
+                case "Uint32": return "uint";
+                case "Boolean": return "bool";
+                default: return valueType?.ToString() ?? "?";
+            }
         }
 
         // Profiler marker names on the runtime component (internal). Feed into UnityEngine.Profiling

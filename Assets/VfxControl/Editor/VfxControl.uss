@@ -759,6 +759,39 @@
     color: var(--unity-colors-label-text);
 }
 
+/* per-system attribute layout foldout (name · type · bytes) */
+.vfx-attr-fold {
+    margin-top: 2px;
+    font-size: 10px;
+}
+.vfx-attr-fold > .unity-foldout__toggle > .unity-toggle__input > .unity-text-element {
+    color: var(--unity-colors-label-text);
+}
+.vfx-attr-row {
+    flex-direction: row;
+    align-items: center;
+    padding: 1px 0;
+    margin-left: 14px;
+}
+.vfx-attr-name {
+    flex-grow: 1;
+    font-size: 10px;
+    color: var(--unity-colors-default-text);
+}
+.vfx-attr-type {
+    flex-shrink: 0;
+    width: 56px;
+    font-size: 10px;
+    color: var(--unity-colors-label-text);
+}
+.vfx-attr-bytes {
+    flex-shrink: 0;
+    width: 44px;
+    font-size: 10px;
+    -unity-text-align: middle-right;
+    color: var(--unity-colors-label-text);
+}
+
 /* ---- Debug tab: texture usage ---- */
 .vfx-texlist {
     flex-direction: column;

@@ -1,53 +1,61 @@
 // VFX Control — particle attribute readback (opt-in).
 //
-// Point a "Custom HLSL" block at this file in the UPDATE context of a particle system you want to
-// inspect and select the `VfxReadback` function. Put it in **Update** (not Initialize) so it re-runs
-// every frame for every live particle.
+// Point a "Custom HLSL" block at this file and select the `VfxReadback` function. Works in the
+// **Update** context (re-runs every frame for every live particle) or the **Output** context (runs per
+// rendered particle — dead particles are naturally excluded). Avoid Initialize: it only fires at
+// particle birth, so the list would be empty on frames with no spawn.
 //
 // MULTI-INSTANCE: the function takes one `instanceId` input port. To capture several VisualEffect
 // instances of the asset separately, add an **exposed Int property named `VfxReadbackInstanceId`** to
 // the graph and wire it into the block's `instanceId` input — the VFX Control window auto-assigns each
-// instance in the scene a distinct id (0,1,2…) via `SetInt`, so they land in separate buffer regions
-// instead of overlapping. If you don't wire it the port defaults to 0 and you simply get a single
-// (merged) instance, which is fine for one effect. See VfxControl.md → Debug tab → Particles.
+// selected instance a distinct id via `SetInt`. Unwired → id 0 (single merged instance).
 //
-// Each particle writes to a STABLE slot (so the spreadsheet rows don't jump) and stamps the slot with
-// the current frame's `_VfxReadbackGeneration` (set by C# each frame, ≥1; 0 = never written). The tool
-// shows the slots whose stamp equals the latest generation present — i.e. the live particles this
-// frame; dead particles stop re-stamping and drop out.
+// This writes a FIXED superset record of common attributes (stride below). Reading an attribute the
+// system doesn't write just yields its default and does NOT add it to the system's stored layout — so
+// the window uses each system's actual attribute layout to show only the columns it really uses.
 //
-// Layout (fixed — the tool decodes this exactly): slot = instanceId*kPerInstance + particleId%kPerInstance,
-//   _VfxReadbackBuffer[slot*2 + 0] = float4(position.xyz, age)
-//   _VfxReadbackBuffer[slot*2 + 1] = float4(color.rgb,    alpha)
-//   _VfxReadbackGen[slot]          = generation stamp
+// Record layout (fixed — the C# tool decodes this exactly), kVfxReadbackStride float4 per particle at
+// base = slot*kVfxReadbackStride, slot = instanceId*kVfxReadbackPerInstance + particleId%kVfxReadbackPerInstance:
+//   +0 position.xyz, age            +1 velocity.xyz, lifetime      +2 color.rgb, alpha
+//   +3 direction.xyz, size          +4 targetPosition.xyz, mass    +5 scale.xyz, texIndex
+//   +6 angle.xyz, alive             +7 angularVelocity.xyz, particleId   +8 pivot.xyz, (pad)
+// _VfxReadbackGen[slot] = generation stamp.
 
 #ifndef VFX_CONTROL_READBACK_INCLUDED
 #define VFX_CONTROL_READBACK_INCLUDED
 
 #define kVfxReadbackPerInstance  256u  // particle slots per instance (matches the C# tool)
 #define kVfxReadbackMaxInstances 16u   // instance regions in the buffer (matches the C# tool)
+#define kVfxReadbackStride       9u    // float4 per particle record (matches the C# tool)
 
 // Globals — bound from C# via Shader.SetGlobalBuffer / SetGlobalInt.
-RWStructuredBuffer<float4> _VfxReadbackBuffer;   // 2 float4 per particle slot
+RWStructuredBuffer<float4> _VfxReadbackBuffer;   // kVfxReadbackStride float4 per particle slot
 RWStructuredBuffer<uint>   _VfxReadbackGen;      // per-slot generation stamp
 int                        _VfxReadbackGeneration; // current frame id (>=1), set by C# each frame
 
 void VfxReadback(inout VFXAttributes attributes, int instanceId)
 {
-    // A Custom HLSL function body is compiled into EVERY pass that includes it (incl. the output
-    // vertex/fragment passes), but only RUNS in the Update compute kernel. UAV writes to a global
-    // RWStructuredBuffer aren't valid in the raster passes on all platforms (Metal), so restrict the
-    // body to the compute stage — it's never invoked elsewhere anyway.
-#if defined(UNITY_COMPUTE_SHADER) || defined(SHADER_STAGE_COMPUTE)
+    // Plain RWStructuredBuffer writes (no UAV atomics, no compute-only locals) so this compiles and
+    // runs in both the Update compute kernel and the Output vertex/fragment passes. Do NOT add a
+    // UNITY_COMPUTE_SHADER guard — it would silently disable the Output-context use.
     uint inst = (uint)max(instanceId, 0);
     if (inst >= kVfxReadbackMaxInstances)
         return; // more concurrent instances than the debug buffer holds — skip the overflow
 
     uint slot = inst * kVfxReadbackPerInstance + (attributes.particleId % kVfxReadbackPerInstance);
-    _VfxReadbackBuffer[slot * 2u + 0u] = float4(attributes.position, attributes.age);
-    _VfxReadbackBuffer[slot * 2u + 1u] = float4(attributes.color,    attributes.alpha);
-    _VfxReadbackGen[slot]              = (uint)_VfxReadbackGeneration;
-#endif
+    uint b = slot * kVfxReadbackStride;
+
+    _VfxReadbackBuffer[b + 0u] = float4(attributes.position,       attributes.age);
+    _VfxReadbackBuffer[b + 1u] = float4(attributes.velocity,       attributes.lifetime);
+    _VfxReadbackBuffer[b + 2u] = float4(attributes.color,          attributes.alpha);
+    _VfxReadbackBuffer[b + 3u] = float4(attributes.direction,      attributes.size);
+    _VfxReadbackBuffer[b + 4u] = float4(attributes.targetPosition, attributes.mass);
+    _VfxReadbackBuffer[b + 5u] = float4(attributes.scaleX, attributes.scaleY, attributes.scaleZ, attributes.texIndex);
+    _VfxReadbackBuffer[b + 6u] = float4(attributes.angleX, attributes.angleY, attributes.angleZ, attributes.alive ? 1.0f : 0.0f);
+    _VfxReadbackBuffer[b + 7u] = float4(attributes.angularVelocityX, attributes.angularVelocityY, attributes.angularVelocityZ, (float)attributes.particleId);
+    _VfxReadbackBuffer[b + 8u] = float4(attributes.pivotX, attributes.pivotY, attributes.pivotZ, 0.0f);
+
+    _VfxReadbackGen[slot] = (uint)_VfxReadbackGeneration;
 }
 
 #endif // VFX_CONTROL_READBACK_INCLUDED

@@ -106,8 +106,9 @@ namespace VfxControl.EditorTools
         // grouped by instance. Dead particles stop re-stamping and drop out.
         const int kReadbackPerInstance = 256;    // particle slots per instance (matches the .hlsl)
         const int kReadbackMaxInstances = 16;    // instance regions (matches the .hlsl)
+        const int kReadbackStride = 9;           // float4 per particle record (matches the .hlsl)
         const int kReadbackCap = kReadbackPerInstance * kReadbackMaxInstances; // total slots
-        const int kReadbackFloat4s = kReadbackCap * 2; // 2 float4 per particle (pos+age, color+alpha)
+        const int kReadbackFloat4s = kReadbackCap * kReadbackStride; // float4 buffer length
         const string kReadbackInstanceProp = "VfxReadbackInstanceId"; // exposed Int the user wires to the block
         static readonly int kReadbackBufferId = Shader.PropertyToID("_VfxReadbackBuffer");
         static readonly int kReadbackGenId = Shader.PropertyToID("_VfxReadbackGen");
@@ -124,6 +125,44 @@ namespace VfxControl.EditorTools
         readonly List<int> _readbackRows = new List<int>(); // slots stamped with _readbackMaxGen → table rows
         int _readbackInstanceCount;              // distinct instances present in the last readback
         bool _readbackPending;                   // an AsyncGPUReadback is in flight
+
+        // Decoded columns: which attributes the instrumented system(s) actually use (from the graph
+        // layout), mapped to fixed float offsets in the .hlsl record. Built per body in BuildDebugParticles.
+        enum RbKind { Float, Color, Alive, Id }
+        readonly struct RbAttr
+        {
+            public readonly string Layout;  // representative stored-attribute name that marks presence
+            public readonly string Title;   // column header
+            public readonly int Float;      // first float index in the per-particle record (0..35)
+            public readonly int Count;      // 1 or 3 components
+            public readonly RbKind Kind;
+            public RbAttr(string layout, string title, int f, int count, RbKind kind)
+            { Layout = layout; Title = title; Float = f; Count = count; Kind = kind; }
+        }
+        // Order = column order; Float offsets must match VfxReadback.hlsl's record packing.
+        static readonly RbAttr[] kReadbackAttrs =
+        {
+            new RbAttr("position",         "Position",     0,  3, RbKind.Float),
+            new RbAttr("age",              "Age",          3,  1, RbKind.Float),
+            new RbAttr("velocity",         "Velocity",     4,  3, RbKind.Float),
+            new RbAttr("lifetime",         "Lifetime",     7,  1, RbKind.Float),
+            new RbAttr("color",            "Color",        8,  3, RbKind.Color),
+            new RbAttr("alpha",            "Alpha",        11, 1, RbKind.Float),
+            new RbAttr("direction",        "Direction",    12, 3, RbKind.Float),
+            new RbAttr("size",             "Size",         15, 1, RbKind.Float),
+            new RbAttr("targetPosition",   "Target Pos",   16, 3, RbKind.Float),
+            new RbAttr("mass",             "Mass",         19, 1, RbKind.Float),
+            new RbAttr("scaleX",           "Scale",        20, 3, RbKind.Float),
+            new RbAttr("texIndex",         "Tex Index",    23, 1, RbKind.Float),
+            new RbAttr("angleX",           "Angle",        24, 3, RbKind.Float),
+            new RbAttr("alive",            "Alive",        27, 1, RbKind.Alive),
+            new RbAttr("angularVelocityX", "Angular Vel",  28, 3, RbKind.Float),
+            new RbAttr("particleId",       "Particle Id",  31, 1, RbKind.Id),
+            new RbAttr("pivotX",           "Pivot",        32, 3, RbKind.Float),
+        };
+        // Columns shown when the graph layout isn't available yet (not compiled): a sensible default.
+        static readonly string[] kReadbackDefaultCols = { "position", "age", "color", "alpha" };
+        readonly List<RbAttr> _readbackCols = new List<RbAttr>(); // active columns for the current asset
         bool _readbackAuto = true;               // continuous capture while the section is shown
         bool _readbackCaptureOnce;               // a manual Capture was requested
         double _lastReadbackReq;                 // throttle (~6 Hz)
@@ -1316,6 +1355,9 @@ namespace VfxControl.EditorTools
                 return;
             }
 
+            // Full attribute layout per system (static per compiled asset; the breakdown behind "mem").
+            var layout = VfxGraphReflection.GetSystemAttributeLayout(_effect.visualEffectAsset);
+
             var list = MakeElement("vfx-syslist");
             foreach (var name in _dbgSysNames)
             {
@@ -1338,11 +1380,34 @@ namespace VfxControl.EditorTools
                 detail.AddToClassList("vfx-sys-detail");
                 row.Add(detail);
 
+                if (layout.TryGetValue(name, out var fields) && fields.Count > 0)
+                    row.Add(BuildAttrLayoutFoldout(fields));
+
                 list.Add(row);
                 _dbgSysRows.Add((name, num, fill, row, detail));
             }
             host.Add(list);
             RefreshDebugStats();
+        }
+
+        // Collapsible per-system attribute layout: name · type · per-particle bytes, in buffer order,
+        // with a header summarising the count and per-particle stride (matches the system's "mem"/cap).
+        static VisualElement BuildAttrLayoutFoldout(List<VfxGraphReflection.VfxAttrField> fields)
+        {
+            int words = 0;
+            foreach (var f in fields) words += f.Words;
+            var fold = new Foldout { value = false, text = $"Layout · {fields.Count} attrs · {words * 4} B/particle" };
+            fold.AddToClassList("vfx-attr-fold");
+            foreach (var f in fields)
+            {
+                var ar = MakeElement("vfx-attr-row");
+                var an = new Label(f.Name); an.AddToClassList("vfx-attr-name");
+                var at = new Label(f.Type); at.AddToClassList("vfx-attr-type");
+                var ab = new Label($"{f.Words * 4} B"); ab.AddToClassList("vfx-attr-bytes");
+                ar.Add(an); ar.Add(at); ar.Add(ab);
+                fold.Add(ar);
+            }
+            return fold;
         }
 
         // Texture usage: every texture wired into the graph (exposed or not), via reflection over the
@@ -1434,18 +1499,21 @@ namespace VfxControl.EditorTools
         }
 
         // ---- Particle attribute readback spreadsheet (opt-in) ------------------------------
-        // Requires the graph to be instrumented with a Custom HLSL block pointing at
-        // VfxReadback.hlsl (each particle atomically appends its position+color into a shared global
-        // buffer). We reset the counter, bind both buffers, AsyncGPUReadback them, and tabulate a flat
-        // list of all live particles across every instance of the asset (# · position · age · color).
+        // Requires the graph to be instrumented with a Custom HLSL block pointing at VfxReadback.hlsl
+        // (writes a fixed superset record per particle into a shared global buffer). We bind the buffers,
+        // AsyncGPUReadback them, and tabulate the live particles. Columns are driven by each system's
+        // actual attribute layout, so only the attributes the system really uses are shown.
         void BuildDebugParticles(VisualElement host)
         {
             _particleTable = null;
             _readbackCountLabel = null;
             _readbackHelp = null;
 
-            // Controls: Capture · Auto · row count. No system id to pick — instances are read back
-            // automatically, partitioned by the VFX instancing system's instanceActiveIndex.
+            // Columns = the curated attributes the asset's systems actually store (union across systems);
+            // fall back to a small default set if the graph layout isn't available yet (not compiled).
+            BuildReadbackColumns();
+
+            // Controls: Capture · Auto · row count.
             var bar = MakeElement("vfx-particles-bar");
             var capture = new Button(() => _readbackCaptureOnce = true) { text = "Capture" };
             capture.AddToClassList("vfx-particles-capture");
@@ -1459,8 +1527,10 @@ namespace VfxControl.EditorTools
             bar.Add(_readbackCountLabel);
             host.Add(bar);
 
-            // The spreadsheet.
-            var table = new MultiColumnListView { showBoundCollectionSize = false };
+            // The spreadsheet. Clicking a column header sorts by it (toggles asc/desc); the sort is
+            // re-applied on every readback so it sticks as the data refreshes.
+            var table = new MultiColumnListView { showBoundCollectionSize = false, sortingMode = ColumnSortingMode.Custom };
+            table.columnSortingChanged += () => { SortReadbackRows(); table.RefreshItems(); };
             table.AddToClassList("vfx-particles-table");
             table.columns.Add(new Column
             {
@@ -1473,26 +1543,29 @@ namespace VfxControl.EditorTools
                 }
             });
             table.columns.Add(new Column { title = "#", width = 44, makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = (_readbackRows[i] % kReadbackPerInstance).ToString() });
-            table.columns.Add(new Column
+            foreach (var a in _readbackCols)
             {
-                title = "Position", width = 190, makeCell = () => MakeCell(),
-                bindCell = (e, i) => { var p = _readbackData[_readbackRows[i] * 2]; ((Label)e).text = $"{p.x:0.###}, {p.y:0.###}, {p.z:0.###}"; }
-            });
-            table.columns.Add(new Column
-            {
-                title = "Age", width = 60, makeCell = () => MakeCell(),
-                bindCell = (e, i) => ((Label)e).text = $"{_readbackData[_readbackRows[i] * 2].w:0.##}"
-            });
-            table.columns.Add(new Column
-            {
-                title = "Color", width = 150, makeCell = MakeColorCell,
-                bindCell = (e, i) =>
-                {
-                    var c = _readbackData[_readbackRows[i] * 2 + 1];
-                    e.Q(className: "vfx-particles-swatch").style.backgroundColor = new Color(c.x, c.y, c.z, 1f);
-                    e.Q<Label>().text = $"{c.x:0.##}, {c.y:0.##}, {c.z:0.##}, {c.w:0.##}";
-                }
-            });
+                var attr = a; // capture per-iteration
+                if (attr.Kind == RbKind.Color)
+                    table.columns.Add(new Column
+                    {
+                        title = attr.Title, width = 150, makeCell = MakeColorCell,
+                        bindCell = (e, i) =>
+                        {
+                            int s = _readbackRows[i];
+                            float r = RbVal(s, attr.Float), g = RbVal(s, attr.Float + 1), b2 = RbVal(s, attr.Float + 2);
+                            // Swatch gamma-corrected so it matches the particle on screen; text stays raw linear.
+                            e.Q(className: "vfx-particles-swatch").style.backgroundColor = new Color(r, g, b2, 1f).gamma;
+                            e.Q<Label>().text = $"{r:0.##}, {g:0.##}, {b2:0.##}";
+                        }
+                    });
+                else
+                    table.columns.Add(new Column
+                    {
+                        title = attr.Title, width = attr.Count == 3 ? 170 : 70, makeCell = () => MakeCell(),
+                        bindCell = (e, i) => ((Label)e).text = FormatRbCell(_readbackRows[i], attr)
+                    });
+            }
             table.itemsSource = _readbackRows;
             _particleTable = table;
             host.Add(table);
@@ -1501,12 +1574,90 @@ namespace VfxControl.EditorTools
             _readbackHelp = MakeElement("vfx-helpbox");
             _readbackHelp.Add(new Label(
                 "No readback data. Add a Custom HLSL block (function VfxReadback) pointing at " +
-                "Assets/VfxControl/Readback/VfxReadback.hlsl in this system's Update context. For separate " +
-                "per-instance rows, expose an Int property named VfxReadbackInstanceId and wire it to the " +
-                "block's instanceId input (the window auto-assigns ids). Only public APIs — see the docs."));
+                "Assets/VfxControl/Readback/VfxReadback.hlsl in this system's Update or Output context. For " +
+                "separate per-instance rows, expose an Int property named VfxReadbackInstanceId and wire it to " +
+                "the block's instanceId input (the window auto-assigns ids). Only public APIs — see the docs."));
             host.Add(_readbackHelp);
 
             RefreshParticleTable();
+        }
+
+        // Reorder _readbackRows by the column the user clicked (MultiColumnListView in Custom sorting
+        // mode just reports the selected columns; we do the actual sort over our row→slot list).
+        void SortReadbackRows()
+        {
+            if (_particleTable == null || _readbackRows.Count < 2) return;
+            SortColumnDescription sort = null;
+            foreach (var s in _particleTable.sortedColumns) { sort = s; break; } // primary column only
+            if (sort == null) return;
+            int col = sort.columnIndex;
+            bool asc = sort.direction == SortDirection.Ascending;
+            _readbackRows.Sort((a, b) =>
+            {
+                int cmp = ParticleSortKey(a, col).CompareTo(ParticleSortKey(b, col));
+                return asc ? cmp : -cmp;
+            });
+        }
+
+        // Comparable key per column: 0 Instance · 1 # (particleId) · 2.. the active attribute columns
+        // (float3 → magnitude, Color → luminance, else the scalar). Guards against a short data buffer.
+        double ParticleSortKey(int slot, int col)
+        {
+            if (col == 0) return slot / kReadbackPerInstance;
+            if (col == 1) return slot % kReadbackPerInstance;
+            int ci = col - 2;
+            if (ci < 0 || ci >= _readbackCols.Count) return slot;
+            var a = _readbackCols[ci];
+            if (a.Kind == RbKind.Color)
+                return 0.2126 * RbVal(slot, a.Float) + 0.7152 * RbVal(slot, a.Float + 1) + 0.0722 * RbVal(slot, a.Float + 2);
+            if (a.Count == 3)
+            {
+                double x = RbVal(slot, a.Float), y = RbVal(slot, a.Float + 1), z = RbVal(slot, a.Float + 2);
+                return Math.Sqrt(x * x + y * y + z * z);
+            }
+            return RbVal(slot, a.Float);
+        }
+
+        // Pick the active columns: the curated attributes the asset's systems actually store (union of
+        // GetSystemAttributeLayout across systems); falls back to a default set when the layout is empty
+        // (graph not compiled this session). Order follows kReadbackAttrs.
+        void BuildReadbackColumns()
+        {
+            _readbackCols.Clear();
+            var present = new HashSet<string>();
+            if (_effect != null)
+                foreach (var kv in VfxGraphReflection.GetSystemAttributeLayout(_effect.visualEffectAsset))
+                    foreach (var f in kv.Value) present.Add(f.Name);
+
+            foreach (var a in kReadbackAttrs)
+            {
+                bool show = present.Count > 0 ? present.Contains(a.Layout)
+                                              : System.Array.IndexOf(kReadbackDefaultCols, a.Layout) >= 0;
+                if (show) _readbackCols.Add(a);
+            }
+        }
+
+        // Read one float of a particle's record from the decoded buffer (stride kReadbackStride float4).
+        float RbVal(int slot, int floatIndex)
+        {
+            int idx = slot * kReadbackStride + (floatIndex >> 2);
+            if (_readbackData == null || idx < 0 || idx >= _readbackData.Length) return 0f;
+            var v = _readbackData[idx];
+            switch (floatIndex & 3) { case 0: return v.x; case 1: return v.y; case 2: return v.z; default: return v.w; }
+        }
+
+        // Text for a non-color attribute cell.
+        string FormatRbCell(int slot, RbAttr a)
+        {
+            switch (a.Kind)
+            {
+                case RbKind.Alive: return RbVal(slot, a.Float) > 0.5f ? "yes" : "no";
+                case RbKind.Id: return ((uint)Mathf.Max(0f, RbVal(slot, a.Float))).ToString();
+                default:
+                    if (a.Count == 3)
+                        return $"{RbVal(slot, a.Float):0.###}, {RbVal(slot, a.Float + 1):0.###}, {RbVal(slot, a.Float + 2):0.###}";
+                    return $"{RbVal(slot, a.Float):0.###}";
+            }
         }
 
         static Label MakeCell()
@@ -1655,6 +1806,7 @@ namespace VfxControl.EditorTools
                         int instance = s / kReadbackPerInstance;
                         if (instance != prevInstance) { _readbackInstanceCount++; prevInstance = instance; }
                     }
+            SortReadbackRows(); // keep the user's chosen column sort applied across refreshes
             _particleTable.RefreshItems();
             bool empty = _readbackRows.Count == 0;
             if (_readbackCountLabel != null)
