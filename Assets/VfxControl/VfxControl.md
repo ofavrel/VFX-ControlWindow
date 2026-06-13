@@ -474,7 +474,8 @@ Sphere/Circle/Torus variants work with no extra code).
     selection is tracked by stable **slots** (`OnParticleSelectionChanged` → `_particleSelSlots`,
     re-pinned in `RefreshParticleTable` so each follows its particle across sort/refresh and drops when it
     dies). When ≥1 row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`) loops the
-    selected slots and per particle (`DrawParticleMarker`) draws a `Handles.DotHandleCap` (constant screen
+    selected slots and per particle (`DrawParticleMarker`) draws a camera-facing **wireframe quad**
+    (`Handles.DrawPolyLine`, sized by size·scale) + a center `Handles.DotHandleCap` (constant screen
     size) + a translucent grey box (`DrawLabelBoxScreen`,
     refactored out of `GizmoLabel`) listing each eye-ON attribute's value at the particle's **world**
     position. The box's **bottom-left** is anchored to the particle's **upper-right corner** — the corner

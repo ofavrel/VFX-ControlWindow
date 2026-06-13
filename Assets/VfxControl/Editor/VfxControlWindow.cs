@@ -4869,12 +4869,30 @@ namespace VfxControl.EditorTools
         {
             if (!TryGetParticleWorld(slot, out var world)) return;
 
-            // Dot stays a constant screen size for visibility; the value box is anchored to the particle's
-            // own world size (size · scale) so it sits at the particle's upper-right corner.
-            float handle = HandleUtility.GetHandleSize(world);
+            // Half-extent from the particle's own size · scale (defaults size≈0.1, scale=1 when unused),
+            // and the camera's right/up so the quad faces the viewer and the box hugs its corner.
+            float pSize = 0.1f, sx = 1f, sy = 1f, sz = 1f;
+            for (int k = 0; k < kReadbackAttrs.Length; k++)
+            {
+                var a = kReadbackAttrs[k];
+                if (a.Layout == "size") pSize = RbVal(slot, a.Float);
+                else if (a.Layout == "scaleX")
+                { sx = RbVal(slot, a.Float); sy = RbVal(slot, a.Float + 1); sz = RbVal(slot, a.Float + 2); }
+            }
+            float half = 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
+            Camera cam = Camera.current;
+            Vector3 cr = cam != null ? cam.transform.right : Vector3.right;
+            Vector3 cu = cam != null ? cam.transform.up : Vector3.up;
+
             if (Event.current.type == EventType.Repaint)
             {
                 var prev = Handles.color;
+                // camera-facing wireframe quad sized by size·scale
+                Handles.color = new Color(1f, 1f, 1f, 0.6f);
+                Vector3 r = cr * half, u = cu * half;
+                Handles.DrawPolyLine(world - r - u, world + r - u, world + r + u, world - r + u, world - r - u);
+                // center dot, constant screen size for visibility
+                float handle = HandleUtility.GetHandleSize(world);
                 Handles.color = Color.white;
                 Handles.DotHandleCap(0, world, Quaternion.identity, handle * 0.04f, EventType.Repaint);
                 Handles.color = prev;
@@ -4889,22 +4907,8 @@ namespace VfxControl.EditorTools
             }
             if (sb.Length == 0) return; // eyes are on attributes not present this asset
 
-            // Anchor the box's bottom-left to the particle's upper-right corner, where the corner is the
-            // particle's half-extent (size · scale) offset toward the camera's right + up. size defaults
-            // to ~0.1 and scale to 1 when the system doesn't use them (VFX attribute defaults).
-            float pSize = 0.1f, sx = 1f, sy = 1f, sz = 1f;
-            for (int k = 0; k < kReadbackAttrs.Length; k++)
-            {
-                var a = kReadbackAttrs[k];
-                if (a.Layout == "size") pSize = RbVal(slot, a.Float);
-                else if (a.Layout == "scaleX")
-                { sx = RbVal(slot, a.Float); sy = RbVal(slot, a.Float + 1); sz = RbVal(slot, a.Float + 2); }
-            }
-            float half = 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
-            Camera cam = Camera.current;
-            Vector3 cr = cam != null ? cam.transform.right : Vector3.right;
-            Vector3 cu = cam != null ? cam.transform.up : Vector3.up;
-            Vector2 corner = HandleUtility.WorldToGUIPoint(world + (cr + cu) * half); // upper-right corner
+            // Anchor the box's bottom-left to the quad's upper-right corner.
+            Vector2 corner = HandleUtility.WorldToGUIPoint(world + (cr + cu) * half);
             DrawLabelBoxScreen(corner, sb.ToString(), new Color(0.15f, 0.15f, 0.15f, 0.55f), bottomLeft: true);
         }
 
