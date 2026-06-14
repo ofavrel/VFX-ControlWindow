@@ -9,8 +9,12 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
 - Unity **6000.6.0a2**, `com.unity.visualeffectgraph` **17.6.0**.th
 - Open via **`Window ▸ VFX Control`**. Diagnostic: **`Tools ▸ VFX Control ▸ Diagnose Target`**
   (logs how the selected/target VFX's exposed properties enumerate — keep for debugging).
-- All code is editor-only under `Assets/VfxControl/Editor/` (no asmdef → compiles into
-  `Assembly-CSharp-Editor`, which references the VFX runtime + editor assemblies).
+- All code is editor-only under `Assets/VfxControl/Editor/`, compiled by
+  **`VfxControl.Editor.asmdef`** (`includePlatforms: ["Editor"]`, `references: []`). It needs no
+  package references: the compile-time VFX types (`VisualEffect`/`VisualEffectAsset`/`VFXRenderer`/
+  `VFXEventAttribute`) are in the **built-in** `UnityEngine.VFXModule`, and every *editor-internal*
+  VFX type is reached by reflection strings (so the package editor assembly is loaded at runtime,
+  never referenced at compile time). `RenderingLayerMask`/`SortingLayer` are built-in `CoreModule`.
 
 ## Files
 
@@ -43,14 +47,23 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   `GetSystemSpaces(asset)` (per-system sim space 0/1/2 = None/Local/World from `VFXDataParticle.space`,
   used to place the particle scene overlay), and the internal `VisualEffect` CPU/GPU profiler
   **marker-name** helpers (`CpuEffectMarker`/`CpuSystemMarker`/`GpuTaskMarker`).
+  The package contract is centralized: `VfxNs`/`VfxAsm` consts + a `VfxType(shortName)` local in
+  `Resolve()` are the one source of the namespace/assembly names. `GetSystemAttributeWords` and
+  `GetSystemAttributeLayout` share one traversal (`EnumerateSystemLayouts` → per-system
+  `(buckets, name)`); `GetSystemSpaces` keeps its own (it needs the data object, not a compiled layout).
 - **`VfxPropertySheet.cs`** — read/write the component's `m_PropertySheet` via
-  `SerializedObject` (undo/prefab/multi-edit safe).
+  `SerializedObject` (undo/prefab/multi-edit safe). Field names are consts
+  (`NameField`/`ValueField`/`OverriddenField`); the per-type read+write is one `s_TypeBridge`
+  table (`SerializedPropertyType` → `(Read, Write)`), so each supported type is described once
+  (Color→Vector4 and uint→long round-trips noted there).
 - **`VfxControlState.cs`** — persistence: favorites/collapsed/constrained per asset GUID
   (`EditorPrefs`); tab/filter/category/search (`SessionState`); global timeline duration.
 - **`VfxClipboard.cs`** — reflection wrapper over internal `UnityEditor.Clipboard` for
   Inspector-interop copy/paste.
-- **`VfxControl.uss`** — styling, bound to built-in `--unity-*` theme variables (only the
-  category accent dots are a custom palette, set inline from C#).
+- **`VfxControl.uss`** — styling, bound to built-in `--unity-*` theme variables. The few
+  hand-authored colors are named custom properties on `.vfx-root` (`--vfx-star`/`--vfx-warn`/
+  `--vfx-bolt`, inherited via `var()`); the category accent dots are a separate per-name palette
+  set inline from C#.
 - **`Readback/VfxReadback.hlsl`** — opt-in sample include for the Debug ▸ Particles spreadsheet: a
   Custom HLSL block points at it (Update context, **no inputs to wire**) and each particle atomically
   appends (`InterlockedAdd` on a counter) its position+color into a shared global buffer, so any number
@@ -61,7 +74,13 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
 Package source lives in `Library/PackageCache/com.unity.visualeffectgraph@*/Editor/`.
 The whole graph/gizmo/types layer is **internal** to `Unity.VisualEffectGraph.Editor`,
 so everything below is reached by **reflection** (see `VfxGraphReflection`/`VfxClipboard`)
-and degrades gracefully (empty list / no-op) if a member shifts.
+and degrades gracefully (empty list / no-op) if a member shifts. **On a package update, audit the
+"VFX Graph package contract" region at the top of `VfxGraphReflection`** (namespace/assembly, the
+`T_*` type short-names, and the `s_*` handle declarations whose comments name each member +
+signature). `Resolve()` records the installed package version (`PackageInfo.FindForAssembly`); a
+binding failure logs it next to `AuthoredAgainstVersion` (`VersionNote()`), and
+`DescribeBindingState()` (→ *Diagnose Target*) reports the version + every core **and** optional
+handle so it's clear exactly what failed to resolve.
 
 - **Exposed properties** come from `VFXGraph.m_ParameterInfo` (`VFXParameterInfo[]`),
   reached via `VisualEffectAsset.GetResource()` → `.GetOrCreateGraph()`
@@ -96,9 +115,12 @@ and degrades gracefully (empty list / no-op) if a member shifts.
   `VisualEffectAsset.PlayEventName`/`StopEventName` (= `OnPlay`/`OnStop`). The Component Board's
   `RecurseGetEventNames` also recurses `VFXSubgraphContext.subChildren` — we don't yet.
   - **Custom attributes** (blackboard): `VFXGraph.customAttributes` → `VFXCustomAttributeDescriptor`s,
-    each with `attributeName` (string) + `type` (`CustomAttributeUtility.Signature`). The Signature
-    enum order is **exactly** our payload type order — `Float,Vector2,Vector3,Vector4,Bool,Uint,Int`
-    (0..6) — so the ordinal maps 1:1 (`GetCustomAttributes` returns `(name, ordinal)`).
+    each with `attributeName` (string) + `type` (`CustomAttributeUtility.Signature` =
+    `Float,Vector2,Vector3,Vector4,Bool,Uint,Int`). `GetCustomAttributes` returns `(name, index)`
+    where the index is mapped from the Signature member **name** (`SignatureIndex`, a `switch` on
+    `.ToString()`), **not its ordinal** — so a future package that reorders/inserts Signature members
+    can't silently mistype an attribute (mirrors `GetSystemSpaces`' by-name space map; an unknown
+    name logs and defaults to Float).
 - **Type icons**: the blackboard's per-type icons live at
   `Packages/com.unity.visualeffectgraph/Editor/UIResources/VFX/types/<Name>@2x.png` —
   `Float`/`Vector2`/`Vector3`/`Vector4`/`Boolean`/`Integer` (+ `d_` dark variants; only `@2x` exists).
@@ -136,7 +158,11 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   Playback→"Playback options"/"Send Event"; Debug→"Live statistics"/"Systems"/"Visualizers"
   (`DebugSections`); selection is **per-tab** in `_sections` (packed into
   `VfxControlState.Sections`, migrating the legacy `Category`). `CurrentSection()` returns
-  "all" for tabs without a rail. The **All tab** (default) is a traditional inspector:
+  "all" for tabs without a rail. The Playback/Renderer/Debug/Send-Event sections share one
+  collapsible `.vfx-group` builder — **`AddGroupShell(host, key, title, count, forceOpen)`** →
+  `(header, content, open)` (the header twirl/title/optional-count + the `ToggleCollapse(key)`
+  click); callers fill `content` themselves (Debug builds lazily on `open`, the rest build rows
+  unconditionally, Send-Event appends its ★ pin to the returned header). The **All tab** (default) is a traditional inspector:
   Properties+Renderer+Playback stacked with no rail (`BuildAllTab`). **Tab tear-off**: right-clicking
   a focused tab (not "All") → **"Open in new window"** (`ContextualMenuManipulator` → `OpenSolo`)
   spawns a second dockable `VfxControlWindow` via `CreateWindow<>` pinned to that one tab — a
@@ -222,7 +248,9 @@ the inner shape/`transform` nested in another type, which carries no space — s
 Activating unfolds the card (restored to prior fold state on deactivate). State:
 `_gizmoStruct` + `_structLeaves`. All four shapes share helpers: `DrawSpaceTransformHandle`
 (tool-aware move/rotate/scale in the base frame), `RadialRadiusHandle` (radial cube
-slider), and `ArcHandle` (Slider2D arc, `rotation` orients the sweep plane). Each
+slider) and its commit wrapper `RadiusHandleCommit(leaf, …)` (draws the slider, writes the
+new radius to `leaf` if it moved, returns it — sphere/circle/torus reuse the return, cone
+ignores it), and `ArcHandle` (Slider2D arc, `rotation` orients the sweep plane). Each
 `Draw*Gizmo` draws the full shape when its arc leaf is absent (so the non-Arc Cone/
 Sphere/Circle/Torus variants work with no extra code).
 

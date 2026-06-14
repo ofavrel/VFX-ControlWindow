@@ -51,11 +51,16 @@ namespace VfxControl.EditorTools
 
     internal static class VfxGraphReflection
     {
-        // The VFX Graph editor package's namespace + assembly — the single source of truth for
-        // the (internal) types we bridge to by reflection. All editor-internal VFX types live in
-        // UnityEditor.VFX within the Unity.VisualEffectGraph.Editor assembly.
-        const string VfxNs = "UnityEditor.VFX.";
-        const string VfxAsm = "Unity.VisualEffectGraph.Editor";
+        // ============================ VFX Graph package contract ============================
+        // Everything below is the (internal) surface this bridge depends on by reflection. On a
+        // VFX Graph package update, audit THIS region: the namespace/assembly, the type short-name
+        // T_* consts, and the `s_*` handle declarations whose comments name each member + signature.
+        // s_PackageVersion (vs AuthoredAgainstVersion) is logged on a binding failure to flag drift.
+        const string VfxNs = "UnityEditor.VFX.";          // namespace of every editor-internal VFX type
+        const string VfxAsm = "Unity.VisualEffectGraph.Editor"; // assembly they live in
+        const string T_ParameterInfo = "VFXParameterInfo"; // resolved both assembly-qualified + by scan
+        const string AuthoredAgainstVersion = "17.6.0";   // VFX Graph version this contract was written for
+        static string s_PackageVersion;                   // actual installed version (for diagnostics)
 
         // Cached reflection handles, resolved lazily once.
         static bool s_Resolved;
@@ -112,16 +117,26 @@ namespace VfxControl.EditorTools
             if (Verbose) Debug.Log("[VFX Control] " + msg);
         }
 
-        /// One-line summary of which reflection handles resolved (for diagnostics).
+        /// One-line summary of which reflection handles resolved (for diagnostics) — the core path
+        /// plus the optional/debug handles, so *Diagnose Target* shows exactly what degraded and
+        /// against which package version.
         internal static string DescribeBindingState()
         {
             Resolve();
-            return $"available={s_Available}, paramInfoType={(s_fSheetType != null)}, " +
+            return $"vfxPackage=({VersionNote()}), available={s_Available}, " +
+                   // core path (s_Available gates on these)
                    $"getResource={s_GetResource != null}, getOrCreateGraph={s_GetOrCreateGraph != null}, " +
-                   $"paramInfoField={s_ParameterInfoField != null}, buildInfo={s_BuildParameterInfo != null}, " +
-                   $"serializableGet={s_SerializableGet != null}, " +
+                   $"paramInfoField={s_ParameterInfoField != null}, paramInfoFields={(s_fSheetType != null)}, " +
+                   $"buildInfo={s_BuildParameterInfo != null}, serializableGet={s_SerializableGet != null}, " +
+                   // optional: events + blackboard custom attributes
                    $"basicEventType={s_BasicEventType != null}, eventName={s_fEventName != null}, " +
-                   $"childrenProp={s_ChildrenProp != null}, customAttrsProp={s_CustomAttrsProp != null}";
+                   $"childrenProp={s_ChildrenProp != null}, customAttrsProp={s_CustomAttrsProp != null}, " +
+                   // optional: debug-tab attribute layout + profiling markers
+                   $"systemNames={s_SystemNamesProp != null}, getData={s_GetData != null}, " +
+                   $"attrLayout={s_GetCurrentLayout != null}, dataSpace={s_DataSpaceProp != null}, " +
+                   $"uniqueSystemName={s_GetUniqueSystemName != null}, " +
+                   $"cpuMarker={s_CpuEffectMarker != null}, gpuMarker={s_GpuTaskMarker != null}, " +
+                   $"profilingReg={s_Register != null}";
         }
 
         static void Resolve()
@@ -130,17 +145,18 @@ namespace VfxControl.EditorTools
             s_Resolved = true;
             try
             {
-                var paramInfoType = Type.GetType($"{VfxNs}VFXParameterInfo, {VfxAsm}");
+                var paramInfoType = Type.GetType($"{VfxNs}{T_ParameterInfo}, {VfxAsm}");
                 if (paramInfoType == null)
                 {
                     // Fall back to scanning loaded assemblies (assembly name can vary).
                     paramInfoType = AppDomain.CurrentDomain.GetAssemblies()
-                        .Select(a => a.GetType(VfxNs + "VFXParameterInfo"))
+                        .Select(a => a.GetType(VfxNs + T_ParameterInfo))
                         .FirstOrDefault(t => t != null);
                 }
                 if (paramInfoType == null) return;
 
                 var asm = paramInfoType.Assembly;
+                s_PackageVersion = UnityEditor.PackageManager.PackageInfo.FindForAssembly(asm)?.version;
                 Type VfxType(string shortName) => asm.GetType(VfxNs + shortName); // all VFX editor types share the namespace
                 var graphType = VfxType("VFXGraph");
                 if (graphType == null) return;
@@ -240,14 +256,23 @@ namespace VfxControl.EditorTools
                 s_Available = s_GetResource != null && s_GetOrCreateGraph != null &&
                               s_ParameterInfoField != null && s_fSheetType != null &&
                               s_fRealType != null && s_fName != null && s_fPath != null;
+
+                // A core handle missing without an exception means the package layout drifted —
+                // warn (with the version pair) so the blank Properties tab is diagnosable.
+                if (!s_Available)
+                    Debug.LogWarning($"[VFX Control] VFX Graph internals only partially resolved " +
+                                     $"({VersionNote()}); properties may be uncategorized. {DescribeBindingState()}");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[VFX Control] Could not bind to VFX Graph internals; " +
-                                 $"properties will be uncategorized. ({e.Message})");
+                Debug.LogWarning($"[VFX Control] Could not bind to VFX Graph internals " +
+                                 $"({VersionNote()}); properties will be uncategorized. ({e.Message})");
                 s_Available = false;
             }
         }
+
+        // "installed 17.6.0, authored 17.6.0" — surfaces a package-version mismatch in warnings/diag.
+        static string VersionNote() => $"installed {s_PackageVersion ?? "?"}, authored {AuthoredAgainstVersion}";
 
         // A non-generic, parameterless method by name — tolerant of overloads that
         // would make Type.GetMethod throw AmbiguousMatchException.
@@ -458,8 +483,7 @@ namespace VfxControl.EditorTools
                         var name = ReadMember(d, "attributeName", "m_AttributeName") as string;
                         var typeObj = ReadMember(d, "type", "m_Type");
                         if (string.IsNullOrEmpty(name) || typeObj == null) continue;
-                        int type = Convert.ToInt32(typeObj); // Signature enum → ordinal
-                        if (!result.Exists(x => x.Item1 == name)) result.Add((name, type));
+                        if (!result.Exists(x => x.Item1 == name)) result.Add((name, SignatureIndex(typeObj)));
                     }
                 }
             }
@@ -469,6 +493,26 @@ namespace VfxControl.EditorTools
             }
 
             return result;
+        }
+
+        // CustomAttributeUtility.Signature (boxed) → our payload type index (Float=0 … Int=6).
+        // Mapped by enum NAME, not ordinal, so reordering/inserting Signature members in a future
+        // package can't silently mistype an attribute (mirrors GetSystemSpaces' by-name space map).
+        static int SignatureIndex(object signature)
+        {
+            switch (signature.ToString())
+            {
+                case "Float":   return 0;
+                case "Vector2": return 1;
+                case "Vector3": return 2;
+                case "Vector4": return 3;
+                case "Bool":    return 4;
+                case "Uint":    return 5;
+                case "Int":     return 6;
+                default:
+                    Log($"unknown custom-attribute Signature '{signature}' — defaulting to Float");
+                    return 0;
+            }
         }
 
         // Read a member by property name (preferred) or serialized field name (fallback).
