@@ -32,11 +32,30 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   - **`.Events.cs`** — the Playback tab's "Send Event" section: chips + the `VFXEventAttribute`
     payload editor (built-in / graph-custom / free-custom rows), per-asset payload persistence.
   - **`.Debug.cs`** — Debug tab live stats grid, CPU/GPU profiling markers, per-system bars,
-    texture usage, Show Bounds visualizer.
-  - **`.Readback.cs`** — opt-in per-particle attribute spreadsheet (GraphicsBuffer readback) +
-    its scene-view overlay.
+    texture usage, Show Bounds visualizer. (The Debug ▸ Particles spreadsheet is its own class —
+    see `VfxParticleReadback` below — wired in here via `AddDebugGroup(..., _readback.Build)`.)
   - **`.Renderer.cs`** — Renderer tab: sibling `VFXRenderer` settings (`RField` rows).
   - **`.Gizmos.cs`** — custom scene-view edit gizmos for spaceable struct properties.
+- **`VfxParticleReadback.cs`** — the opt-in per-particle attribute spreadsheet (GraphicsBuffer
+  readback) + its scene-view overlay, extracted as a **self-contained subsystem** (not a partial):
+  it owns its GPU buffers + decoded state + the table, with an `IDisposable` lifecycle. The window
+  feeds it the selection (`SetTarget`) and drives it — `Build` (Debug tab body), `Pump` (Tick),
+  `DrawOverlay` (OnSceneGui), `Dispose` (OnDisable). Its only outward calls are the static
+  `VfxGraphReflection` layout/space queries and `VfxSceneLabel` for the overlay value box.
+- **`VfxSceneLabel.cs`** — `DrawBox(anchor, text, bg, bottomLeft)`: the shared translucent
+  rounded-box scene label (cached `GUIStyle` + one bg texture per color), used by both the gizmo
+  labels and the particle overlay (owned by neither — Repaint-gated).
+- **Pure-logic helpers** (stateless, unit-tested — extracted from the window/readback so they're
+  testable without a window or a live VFX):
+  - **`VfxConstrain.cs`** — constrained-proportions math (`Components`/`Vec2`/`Vec3`/`Vec4`); the
+    property rows' chain-lock calls `VfxConstrain.VecN`.
+  - **`VfxReadbackRecord.cs`** — the `VfxReadback.hlsl` record contract: `Kind`/`Attr`, the `Attrs`
+    table + `Stride`, and pure decoders `Val`/`Format`/`SortKey` over a `Vector4[]`.
+    `VfxParticleReadback` delegates its `RbVal`/`FormatRbCell`/`ParticleSortKey` here.
+  - **`VfxPropertyLayout.cs`** — `IsScalarLeaf`, `ClassifyStructs` (struct→flatten/inline/card),
+    `AssignCategoryColors` (keyword palette else distinct fallback) + the shared `Hex`. The
+    Properties tab's `BuildStructLeavesMap`/`BuildCategoryColorMap` and Debug's `EfficiencyColor`
+    call into it.
 - **`VfxGraphReflection.cs`** — reflection bridge to the editor-internal VFX graph;
   `GetExposedParameters(asset)` → `List<VfxExposedParam>`, `GetEventNames(asset)` →
   custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`), and
@@ -68,6 +87,17 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   Custom HLSL block points at it (Update context, **no inputs to wire**) and each particle atomically
   appends (`InterlockedAdd` on a counter) its position+color into a shared global buffer, so any number
   of instances of the asset never clobber each other; the window reads it back (see Debug tab below).
+- **`Editor/Tests/`** — EditMode test suite (UTF; `VfxControl.Editor.Tests.asmdef`, internals exposed
+  via `Editor/AssemblyInfo.cs` → `InternalsVisibleTo`). `VfxControlStateTests` (prefs/set
+  serialization, duration clamp — isolated via a throwaway GUID + save/restore), `VfxPropertySheetTests`
+  (override set/get/reset + Color→Vector4, on a throwaway `VisualEffect`), and `VfxReflectionContractTests`
+  — the **package-update canary** (`BindingResolves` asserts `available=True`; param types, event
+  names, and by-name custom-attribute mapping checked against the fixtures). Plus **pure-logic unit
+  tests** (no fixture): `VfxConstrainTests`, `VfxReadbackRecordTests` (incl. an offset-contract test
+  guarding `.hlsl` drift), `VfxPropertyLayoutTests`. Fixture-dependent tests `Assert.Ignore` when
+  their `.vfx` fixture is absent; the authored fixtures live alongside the tests
+  (`Assets/VfxControl/Editor/Tests/VfxControl_Properties|Events|MultiSystem.vfx` — under `Editor/` so
+  they stay out of builds). Run via **Window ▸ General ▸ Test Runner ▸ EditMode**.
 
 ## Ground truth (verified against the VFX package source — do NOT re-guess)
 

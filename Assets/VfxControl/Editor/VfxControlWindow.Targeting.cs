@@ -117,7 +117,6 @@ namespace VfxControl.EditorTools
             _gizmoStruct = null; // gizmo target is invalid for a new component
             _recorders.Clear();  // marker names embed the old effect/system — drop stale Recorders
             _smoothNs.Clear();
-            _lastInstanceAssign = 0; // reassign readback instance ids immediately for the new selection
             _effect = effect;
 
             _effects.Clear();
@@ -128,6 +127,7 @@ namespace VfxControl.EditorTools
                 _so = _sos[0];
             }
             else _so = null;
+            _readback.SetTarget(_effect, _effects); // feed the particle-readback subsystem the new selection
 
             var asset = _effect != null ? _effect.visualEffectAsset : null;
             _params = VfxGraphReflection.GetExposedParameters(asset);

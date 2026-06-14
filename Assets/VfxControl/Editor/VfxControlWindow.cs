@@ -32,6 +32,10 @@ namespace VfxControl.EditorTools
         const string UssPath = "Assets/VfxControl/Editor/VfxControl.uss";
         const long kTickMs = 33; // ~30 fps clock (playback scrub + live stat refresh)
 
+        // Debug ▸ Particles spreadsheet + scene overlay — a self-contained subsystem fed the current
+        // selection via SetTarget and driven by Build/Pump/DrawOverlay/Dispose (owns its GPU buffers).
+        readonly VfxParticleReadback _readback = new VfxParticleReadback();
+
         // --- ui state ---
         VfxControlState _state;
         HashSet<string> _favorites = new HashSet<string>();
@@ -150,8 +154,7 @@ namespace VfxControl.EditorTools
         void OnDisable()
         {
             StopProfiling(); // release the VFX profiling registration we requested for timing readouts
-            _readbackBuffer?.Dispose(); _readbackBuffer = null; // GPU readback buffer
-            _readbackGenBuffer?.Dispose(); _readbackGenBuffer = null; // per-slot generation buffer
+            _readback.Dispose(); // release the particle-readback GPU buffers
             SavePayloads(); // OnDisable fires before a domain reload (and on close) — SessionState
                             // carries the payloads across recompiles, but drops them on editor restart.
             Undo.undoRedoPerformed -= OnUndoRedo;
@@ -947,7 +950,7 @@ namespace VfxControl.EditorTools
             }
 
             UpdateLive();
-            PumpReadback(); // keeps the readback globals bound; only requests data when the panel shows
+            _readback.Pump(); // keeps the readback globals bound; only requests data when the panel shows
         }
 
         void UpdateLive()

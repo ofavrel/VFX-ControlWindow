@@ -74,7 +74,7 @@ namespace VfxControl.EditorTools
             if (InSection("textures"))
                 AddDebugGroup(body, "textures", "Textures", BuildDebugTextures);
             if (InSection("particles"))
-                AddDebugGroup(body, "particles", "Particles", BuildDebugParticles);
+                AddDebugGroup(body, "particles", "Particles", _readback.Build);
             if (InSection("visualizers"))
                 AddDebugGroup(body, "visualizers", "Visualizers", BuildDebugVisualizers);
 
@@ -299,9 +299,9 @@ namespace VfxControl.EditorTools
         // allocated capacity is used — under ~50% reads as over-allocated (hot/red), ~90%+ as
         // well-utilised (cold/green).
         static Color EfficiencyColor(float efficiency) =>
-            efficiency < 0.51f ? Hex("#ff2e2e") :
-            efficiency < 0.91f ? Hex("#e3a98b") :
-                                 Hex("#00ff47");
+            efficiency < 0.51f ? VfxPropertyLayout.Hex("#ff2e2e") :
+            efficiency < 0.91f ? VfxPropertyLayout.Hex("#e3a98b") :
+                                 VfxPropertyLayout.Hex("#00ff47");
 
         // Adaptive time format: ms for ≥1 ms, else microseconds (VFX per-system costs are usually a
         // few µs, which "0.00 ms" can't show). "—" for unavailable (NaN).

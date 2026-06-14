@@ -92,37 +92,18 @@ namespace VfxControl.EditorTools
 
         // For each struct parent, collect its descendant leaf properties (entries that
         // follow it with greater depth), used by the header's pin-all / reset-all.
+        // Classify struct rendering (delegated to the pure VfxPropertyLayout.ClassifyStructs), then
+        // copy into the live dicts the body reads.
         void BuildStructLeavesMap()
         {
+            var m = VfxPropertyLayout.ClassifyStructs(_params);
             _structLeaves.Clear();
+            foreach (var kv in m.Leaves) _structLeaves[kv.Key] = kv.Value;
             _flattenChild.Clear();
+            foreach (var kv in m.FlattenChild) _flattenChild[kv.Key] = kv.Value;
             _inlineStruct.Clear();
-            for (int i = 0; i < _params.Count; i++)
-            {
-                if (!_params[i].IsStruct) continue;
-                int d = _params[i].Depth;
-                var leaves = new List<VfxExposedParam>();
-                int total = 0;
-                for (int j = i + 1; j < _params.Count && _params[j].Depth > d; j++)
-                {
-                    total++;
-                    if (!_params[j].IsStruct) leaves.Add(_params[j]);
-                }
-                _structLeaves[_params[i]] = leaves;
-
-                bool allLeaves = leaves.Count == total;
-                // single element → plain row, EXCEPT spaceable ones (Position/Direction):
-                // those stay as a labelled header + value row so the header can carry the
-                // space + edit-gizmo and the value row the constrain lock.
-                if (total == 1 && leaves.Count == 1 && !_params[i].Spaceable)
-                    _flattenChild[_params[i]] = leaves[0];
-                else if (allLeaves && leaves.Count >= 2 && leaves.Count <= 4 && leaves.All(IsScalarLeaf))
-                    _inlineStruct[_params[i]] = leaves;     // scalar components → inline like a vector
-            }
+            foreach (var kv in m.InlineStruct) _inlineStruct[kv.Key] = kv.Value;
         }
-
-        static bool IsScalarLeaf(VfxExposedParam p) =>
-            p.SheetType == "m_Float" || p.SheetType == "m_Int" || p.SheetType == "m_Uint";
 
         // Ordered entries to display: visible leaves plus any struct parent that has a
         // visible descendant (so a shown child still appears under its struct label).
@@ -655,16 +636,16 @@ namespace VfxControl.EditorTools
                     return Bind(new Toggle(), p, row, v => v is bool b && b, v => v);
 
                 case "m_Vector2f":
-                    return Bind(new Vector2Field(), p, row, v => v is Vector2 x ? x : Vector2.zero, v => v, ConstrainVec2);
+                    return Bind(new Vector2Field(), p, row, v => v is Vector2 x ? x : Vector2.zero, v => v, VfxConstrain.Vec2);
 
                 case "m_Vector3f":
-                    return Bind(new Vector3Field(), p, row, v => v is Vector3 x ? x : Vector3.zero, v => v, ConstrainVec3);
+                    return Bind(new Vector3Field(), p, row, v => v is Vector3 x ? x : Vector3.zero, v => v, VfxConstrain.Vec3);
 
                 case "m_Vector4f":
                     return p.RealType == "Color"
                         ? Bind(new ColorField { hdr = true, showAlpha = true }, p, row,
                                v => v is Color c ? c : (v is Vector4 v4 ? (Color)v4 : Color.white), v => v)
-                        : Bind(new Vector4Field(), p, row, v => v is Vector4 x ? x : Vector4.zero, v => v, ConstrainVec4);
+                        : Bind(new Vector4Field(), p, row, v => v is Vector4 x ? x : Vector4.zero, v => v, VfxConstrain.Vec4);
 
                 case "m_Gradient":
                     // VFX gradients are linear + HDR (matches the graph's GradientPropertyRM)
@@ -726,50 +707,6 @@ namespace VfxControl.EditorTools
             if (!_constrained.Remove(p.Name)) _constrained.Add(p.Name);
             _state.SaveConstrained(_constrained);
             RebuildBodyOnly();
-        }
-
-        static Vector2 ConstrainVec2(Vector2 a, Vector2 b)
-        {
-            var r = ConstrainComponents(new[] { a.x, a.y }, new[] { b.x, b.y });
-            return new Vector2(r[0], r[1]);
-        }
-
-        static Vector3 ConstrainVec3(Vector3 a, Vector3 b)
-        {
-            var r = ConstrainComponents(new[] { a.x, a.y, a.z }, new[] { b.x, b.y, b.z });
-            return new Vector3(r[0], r[1], r[2]);
-        }
-
-        static Vector4 ConstrainVec4(Vector4 a, Vector4 b)
-        {
-            var r = ConstrainComponents(new[] { a.x, a.y, a.z, a.w }, new[] { b.x, b.y, b.z, b.w });
-            return new Vector4(r[0], r[1], r[2], r[3]);
-        }
-
-        // Scale all components by the ratio of the one the user changed (Unity's
-        // constrained-proportions behavior). If the edited component was 0 (ratio
-        // undefined), make every component equal to the new value.
-        static float[] ConstrainComponents(float[] prev, float[] next)
-        {
-            int changed = -1;
-            for (int i = 0; i < prev.Length; i++)
-                if (!Mathf.Approximately(prev[i], next[i])) { changed = i; break; }
-            if (changed < 0) return next;
-
-            var result = (float[])next.Clone();
-            if (Mathf.Approximately(prev[changed], 0f))
-            {
-                for (int i = 0; i < result.Length; i++) result[i] = next[changed];
-            }
-            else
-            {
-                float ratio = next[changed] / prev[changed];
-                for (int i = 0; i < result.Length; i++)
-                    // keep the edited component as typed; round the derived ones to 2
-                    // decimals so the fields don't widen with long float tails.
-                    result[i] = (i == changed) ? next[changed] : Mathf.Round(prev[i] * ratio * 100f) / 100f;
-            }
-            return result;
         }
 
         // ---- copy / paste (interops with the Inspector via UnityEditor.Clipboard) ----
@@ -861,60 +798,20 @@ namespace VfxControl.EditorTools
                 header.EnableInClassList("vfx-row--modified", leaves.Any(c => VfxPropertySheet.IsOverridden(_so, c)));
             UpdateFooter();
         }
-        // Category accent dots — a small custom palette (handoff): desaturated to sit
-        // calmly against the gray UI. Conventional category names get a themed color;
-        // everything else is assigned a distinct palette color by order of appearance.
-        static readonly (string key, Color color)[] s_CatPalette =
-        {
-            ("spawn",   Hex("#c98a3a")),
-            ("color",   Hex("#c95a4a")),
-            ("light",   Hex("#c95a4a")),
-            ("motion",  Hex("#4a8ac9")),
-            ("shape",   Hex("#4a8ac9")),
-            ("size",    Hex("#7a9a4a")),
-            ("life",    Hex("#7a9a4a")),
-            ("texture", Hex("#8a6ac9")),
-            ("render",  Hex("#8a6ac9")),
-        };
-
-        static readonly Color[] s_Fallback =
-        {
-            Hex("#c98a3a"), Hex("#c95a4a"), Hex("#4a8ac9"), Hex("#7a9a4a"),
-            Hex("#8a6ac9"), Hex("#4aa39a"), Hex("#c08ac9"), Hex("#9a9a4a"),
-        };
-
-        // Assign each category a color once per build, in graph order, so unrecognized
-        // names cycle through distinct palette colors instead of colliding via a hash.
+        // Assign each category its accent-dot color (delegated to VfxPropertyLayout.AssignCategoryColors,
+        // keyword palette else distinct fallback), cached per build. Empty category → "Uncategorized".
         void BuildCategoryColorMap()
         {
             _categoryColors.Clear();
-            int fallback = 0;
-            foreach (var p in _params)
-            {
-                string cat = string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category;
-                if (_categoryColors.ContainsKey(cat)) continue;
-
-                string lc = cat.ToLowerInvariant();
-                Color color = default;
-                bool keyed = false;
-                foreach (var (key, c) in s_CatPalette)
-                    if (lc.Contains(key)) { color = c; keyed = true; break; }
-                if (!keyed) color = s_Fallback[fallback++ % s_Fallback.Length];
-
-                _categoryColors[cat] = color;
-            }
+            foreach (var kv in VfxPropertyLayout.AssignCategoryColors(
+                         _params.Select(p => string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category)))
+                _categoryColors[kv.Key] = kv.Value;
         }
 
         Color GetCategoryColor(string category)
         {
             if (_categoryColors.Count == 0) BuildCategoryColorMap();
-            return _categoryColors.TryGetValue(category, out var c) ? c : s_Fallback[0];
-        }
-
-        static Color Hex(string hex)
-        {
-            ColorUtility.TryParseHtmlString(hex, out var c);
-            return c;
+            return _categoryColors.TryGetValue(category, out var c) ? c : VfxPropertyLayout.DefaultDotColor;
         }
         // ---- spaceable property space icon (display only) ----
 
