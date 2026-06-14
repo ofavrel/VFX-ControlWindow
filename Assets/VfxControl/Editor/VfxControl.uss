@@ -1,12 +1,20 @@
 /* VFX Control — styling. Colors bind to Unity's built-in --unity-* USS
-   variables so the window tracks the user's Editor theme automatically; the
-   only hand-authored colors are the category accent dots (a deliberate custom
-   palette, set inline from C#). 8px spacing, 2px control radius. */
+   variables so the window tracks the user's Editor theme automatically. The
+   few hand-authored colors are named custom properties on .vfx-root
+   (--vfx-star/warn/bolt); the category accent dots are a separate per-name
+   palette set inline from C#. 8px spacing, 2px control radius. */
 
 .vfx-root {
     flex-grow: 1;
     font-size: 12px;
     background-color: var(--unity-colors-window-background);
+
+    /* The only hand-authored colors (everything else rides the built-in --unity-* theme).
+       Defined here so they cascade to every descendant via var(); the category accent dots
+       stay a separate per-name palette set inline from C#. */
+    --vfx-star: rgb(230, 184, 64);   /* gold favorite/pin star */
+    --vfx-warn: rgb(235, 110, 90);   /* stale graph-custom payload row */
+    --vfx-bolt: rgb(255, 112, 20);   /* orange Send-Event bolt */
 }
 
 .vfx-scroll {
@@ -172,10 +180,10 @@
     align-items: center;
     padding: 0 14px;
     font-size: 13px;
-    background-color: rgba(0, 0, 0, 0);
+    background-color: transparent;
     border-width: 0;
     border-bottom-width: 2px;
-    border-bottom-color: rgba(0, 0, 0, 0);
+    border-bottom-color: transparent;
     color: var(--unity-colors-label-text);
     border-radius: 0;
 }
@@ -282,8 +290,8 @@
     border-radius: 2px;
     border-width: 1px;
     /* no chip frame by default — only the dot + label show */
-    border-color: rgba(0, 0, 0, 0);
-    background-color: rgba(0, 0, 0, 0);
+    border-color: transparent;
+    background-color: transparent;
     color: var(--unity-colors-label-text);
     font-size: 12px;
 }
@@ -316,7 +324,7 @@
     margin-right: 4px;
     font-size: 11px;
     -unity-text-align: middle-center;
-    color: rgb(230, 184, 64); /* gold star, in the category-dot slot */
+    color: var(--vfx-star); /* gold star, in the category-dot slot */
     flex-shrink: 0;
 }
 
@@ -330,7 +338,7 @@
 }
 .vfx-group-pin--on {
     opacity: 1;
-    color: rgb(230, 184, 64);
+    color: var(--vfx-star);
 }
 
 /* ---- category groups (custom collapsible) ---- */
@@ -492,7 +500,7 @@
     justify-content: center;
     padding: 0;
     border-width: 0;
-    background-color: rgba(0, 0, 0, 0);
+    background-color: transparent;
     opacity: 0.5; /* greyed like the reset icon until active */
     display: none;
 }
@@ -617,7 +625,7 @@
     margin-left: 1px;
     align-items: center;
     justify-content: center;
-    background-color: rgba(0, 0, 0, 0);
+    background-color: transparent;
     border-width: 0;
 }
 .vfx-iconbtn:hover {
@@ -1066,7 +1074,7 @@
 }
 /* stale graph-custom name (renamed/deleted/retyped in the blackboard) */
 .vfx-payload-namebtn-label--warn {
-    color: rgb(235, 110, 90);
+    color: var(--vfx-warn);
 }
 .vfx-payload-namebtn-caret {
     flex-shrink: 0;
@@ -1126,5 +1134,5 @@
 .vfx-sendevent-bolt {
     margin-right: 4px;
     font-size: 13px;
-    color: rgb(255, 112, 20);  /* orange (less yellow) */
+    color: var(--vfx-bolt);  /* orange (less yellow) */
 }

@@ -30,6 +30,7 @@ namespace VfxControl.EditorTools
     public partial class VfxControlWindow : EditorWindow
     {
         const string UssPath = "Assets/VfxControl/Editor/VfxControl.uss";
+        const long kTickMs = 33; // ~30 fps clock (playback scrub + live stat refresh)
 
         // --- ui state ---
         VfxControlState _state;
@@ -142,7 +143,7 @@ namespace VfxControl.EditorTools
             Undo.undoRedoPerformed += OnUndoRedo;
             EditorApplication.projectChanged += OnProjectChanged;
             SceneView.duringSceneGui += OnSceneGui;
-            rootVisualElement.schedule.Execute(Tick).Every(33); // ~30fps clock + live stats
+            rootVisualElement.schedule.Execute(Tick).Every(kTickMs); // ~30fps clock + live stats
             Rebuild();
         }
 

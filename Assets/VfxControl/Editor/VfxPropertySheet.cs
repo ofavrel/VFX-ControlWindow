@@ -11,6 +11,8 @@
 // VisualEffectEditor does it. The per-type value read/write mirrors
 // VisualEffectEditor.GetObjectValue / SetObjectValue, keyed on propertyType.
 
+using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -18,6 +20,11 @@ namespace VfxControl.EditorTools
 {
     internal static class VfxPropertySheet
     {
+        // The serialized field names of one m_PropertySheet.<sheetType>.m_Array element.
+        const string NameField = "m_Name";
+        const string ValueField = "m_Value";
+        const string OverriddenField = "m_Overridden";
+
         static string ArrayPath(VfxExposedParam p) => $"m_PropertySheet.{p.SheetType}.m_Array";
 
         /// The serialized array element whose m_Name matches the property, or null
@@ -29,7 +36,7 @@ namespace VfxControl.EditorTools
             for (int i = 0; i < array.arraySize; i++)
             {
                 var element = array.GetArrayElementAtIndex(i);
-                var nameProp = element.FindPropertyRelative("m_Name");
+                var nameProp = element.FindPropertyRelative(NameField);
                 if (nameProp != null && nameProp.stringValue == p.Name)
                     return element;
             }
@@ -39,7 +46,7 @@ namespace VfxControl.EditorTools
         public static bool IsOverridden(SerializedObject so, VfxExposedParam p)
         {
             var entry = FindEntry(so, p);
-            var overridden = entry?.FindPropertyRelative("m_Overridden");
+            var overridden = entry?.FindPropertyRelative(OverriddenField);
             return overridden != null && overridden.boolValue;
         }
 
@@ -49,7 +56,7 @@ namespace VfxControl.EditorTools
             var entry = FindEntry(so, p);
             if (entry != null)
             {
-                var valueProp = entry.FindPropertyRelative("m_Value");
+                var valueProp = entry.FindPropertyRelative(ValueField);
                 if (valueProp != null)
                     return ReadValue(valueProp);
             }
@@ -70,13 +77,13 @@ namespace VfxControl.EditorTools
                 int index = array.arraySize;
                 array.InsertArrayElementAtIndex(index);
                 entry = array.GetArrayElementAtIndex(index);
-                entry.FindPropertyRelative("m_Name").stringValue = p.Name;
+                entry.FindPropertyRelative(NameField).stringValue = p.Name;
             }
 
-            var valueProp = entry.FindPropertyRelative("m_Value");
+            var valueProp = entry.FindPropertyRelative(ValueField);
             if (valueProp != null)
                 WriteValue(valueProp, value);
-            entry.FindPropertyRelative("m_Overridden").boolValue = true;
+            entry.FindPropertyRelative(OverriddenField).boolValue = true;
 
             so.ApplyModifiedProperties();
         }
@@ -88,14 +95,14 @@ namespace VfxControl.EditorTools
             var entry = FindEntry(so, p);
             if (entry == null) return;
 
-            var overridden = entry.FindPropertyRelative("m_Overridden");
+            var overridden = entry.FindPropertyRelative(OverriddenField);
             if (overridden != null) overridden.boolValue = false;
 
             // Re-seat the stored value to the graph default so a later toggle-on
             // doesn't resurrect a stale override value.
             if (p.DefaultValue != null)
             {
-                var valueProp = entry.FindPropertyRelative("m_Value");
+                var valueProp = entry.FindPropertyRelative(ValueField);
                 if (valueProp != null) WriteValue(valueProp, p.DefaultValue);
             }
             so.ApplyModifiedProperties();
@@ -111,61 +118,32 @@ namespace VfxControl.EditorTools
         }
 
         // --- per-type value bridge (mirrors VisualEffectEditor.Get/SetObjectValue) ---
-
-        static object ReadValue(SerializedProperty prop)
+        //
+        // Each supported SerializedPropertyType is described once — its read + write — so adding
+        // a type is a single entry. Unlisted types read as null and ignore writes.
+        static readonly Dictionary<SerializedPropertyType,
+            (Func<SerializedProperty, object> Read, Action<SerializedProperty, object> Write)> s_TypeBridge = new()
         {
-            switch (prop.propertyType)
-            {
-                case SerializedPropertyType.Float: return prop.floatValue;
-                case SerializedPropertyType.Integer: return prop.longValue;
-                case SerializedPropertyType.Boolean: return prop.boolValue;
-                case SerializedPropertyType.Vector2: return prop.vector2Value;
-                case SerializedPropertyType.Vector3: return prop.vector3Value;
-                case SerializedPropertyType.Vector4: return prop.vector4Value;
-                case SerializedPropertyType.Color: return prop.colorValue;
-                case SerializedPropertyType.ObjectReference: return prop.objectReferenceValue;
-                case SerializedPropertyType.Gradient: return prop.gradientValue;
-                case SerializedPropertyType.AnimationCurve: return prop.animationCurveValue;
-                default: return null;
-            }
-        }
+            { SerializedPropertyType.Float,           (p => p.floatValue,           (p, v) => p.floatValue = Convert.ToSingle(v)) },
+            // uint round-trips through longValue (it overflows a signed int as a negative).
+            { SerializedPropertyType.Integer,         (p => p.longValue,            (p, v) => p.longValue = v is uint u ? u : Convert.ToInt64(v)) },
+            { SerializedPropertyType.Boolean,         (p => p.boolValue,            (p, v) => p.boolValue = (bool)v) },
+            { SerializedPropertyType.Vector2,         (p => p.vector2Value,         (p, v) => p.vector2Value = (Vector2)v) },
+            { SerializedPropertyType.Vector3,         (p => p.vector3Value,         (p, v) => p.vector3Value = (Vector3)v) },
+            // Color is stored in a Vector4f sheet entry, so a Color value writes through as a Vector4.
+            { SerializedPropertyType.Vector4,         (p => p.vector4Value,         (p, v) => p.vector4Value = v is Color c ? (Vector4)c : (Vector4)v) },
+            { SerializedPropertyType.Color,           (p => p.colorValue,           (p, v) => p.colorValue = (Color)v) },
+            { SerializedPropertyType.ObjectReference, (p => p.objectReferenceValue, (p, v) => p.objectReferenceValue = v as UnityEngine.Object) },
+            { SerializedPropertyType.Gradient,        (p => p.gradientValue,        (p, v) => p.gradientValue = (Gradient)v) },
+            { SerializedPropertyType.AnimationCurve,  (p => p.animationCurveValue,  (p, v) => p.animationCurveValue = (AnimationCurve)v) },
+        };
+
+        static object ReadValue(SerializedProperty prop) =>
+            s_TypeBridge.TryGetValue(prop.propertyType, out var b) ? b.Read(prop) : null;
 
         static void WriteValue(SerializedProperty prop, object value)
         {
-            switch (prop.propertyType)
-            {
-                case SerializedPropertyType.Float:
-                    prop.floatValue = System.Convert.ToSingle(value);
-                    break;
-                case SerializedPropertyType.Integer:
-                    if (value is uint u) prop.longValue = u;
-                    else prop.longValue = System.Convert.ToInt64(value);
-                    break;
-                case SerializedPropertyType.Boolean:
-                    prop.boolValue = (bool)value;
-                    break;
-                case SerializedPropertyType.Vector2:
-                    prop.vector2Value = (Vector2)value;
-                    break;
-                case SerializedPropertyType.Vector3:
-                    prop.vector3Value = (Vector3)value;
-                    break;
-                case SerializedPropertyType.Vector4:
-                    prop.vector4Value = value is Color c ? (Vector4)c : (Vector4)value;
-                    break;
-                case SerializedPropertyType.Color:
-                    prop.colorValue = (Color)value;
-                    break;
-                case SerializedPropertyType.ObjectReference:
-                    prop.objectReferenceValue = value as Object;
-                    break;
-                case SerializedPropertyType.Gradient:
-                    prop.gradientValue = (Gradient)value;
-                    break;
-                case SerializedPropertyType.AnimationCurve:
-                    prop.animationCurveValue = (AnimationCurve)value;
-                    break;
-            }
+            if (s_TypeBridge.TryGetValue(prop.propertyType, out var b)) b.Write(prop, value);
         }
     }
 }

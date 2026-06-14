@@ -51,6 +51,12 @@ namespace VfxControl.EditorTools
 
     internal static class VfxGraphReflection
     {
+        // The VFX Graph editor package's namespace + assembly — the single source of truth for
+        // the (internal) types we bridge to by reflection. All editor-internal VFX types live in
+        // UnityEditor.VFX within the Unity.VisualEffectGraph.Editor assembly.
+        const string VfxNs = "UnityEditor.VFX.";
+        const string VfxAsm = "Unity.VisualEffectGraph.Editor";
+
         // Cached reflection handles, resolved lazily once.
         static bool s_Resolved;
         static bool s_Available;
@@ -124,18 +130,19 @@ namespace VfxControl.EditorTools
             s_Resolved = true;
             try
             {
-                var paramInfoType = Type.GetType("UnityEditor.VFX.VFXParameterInfo, Unity.VisualEffectGraph.Editor");
+                var paramInfoType = Type.GetType($"{VfxNs}VFXParameterInfo, {VfxAsm}");
                 if (paramInfoType == null)
                 {
                     // Fall back to scanning loaded assemblies (assembly name can vary).
                     paramInfoType = AppDomain.CurrentDomain.GetAssemblies()
-                        .Select(a => a.GetType("UnityEditor.VFX.VFXParameterInfo"))
+                        .Select(a => a.GetType(VfxNs + "VFXParameterInfo"))
                         .FirstOrDefault(t => t != null);
                 }
                 if (paramInfoType == null) return;
 
                 var asm = paramInfoType.Assembly;
-                var graphType = asm.GetType("UnityEditor.VFX.VFXGraph");
+                Type VfxType(string shortName) => asm.GetType(VfxNs + shortName); // all VFX editor types share the namespace
+                var graphType = VfxType("VFXGraph");
                 if (graphType == null) return;
                 // NOTE: VisualEffectResource is a built-in editor type (not in this
                 // package assembly), so we must NOT try to resolve it here and must
@@ -179,7 +186,7 @@ namespace VfxControl.EditorTools
                 s_fSpace = paramInfoType.GetField("space", any);
                 s_fSpaceable = paramInfoType.GetField("spaceable", any);
 
-                var serializableType = asm.GetType("UnityEditor.VFX.VFXSerializableObject");
+                var serializableType = VfxType("VFXSerializableObject");
                 if (serializableType != null)
                     // VFXSerializableObject has both Get() and Get<T>(); avoid the
                     // ambiguous GetMethod overload and take the non-generic one.
@@ -188,7 +195,7 @@ namespace VfxControl.EditorTools
                 // Event blocks: VFXBasicEvent.eventName, reachable via the graph's children
                 // (mirrors VFXComponentBoard.RecurseGetEventNames). Optional — degrades to no
                 // graph events if absent. `children` is a `new`-hidden property, so pick by name.
-                s_BasicEventType = asm.GetType("UnityEditor.VFX.VFXBasicEvent");
+                s_BasicEventType = VfxType("VFXBasicEvent");
                 s_fEventName = s_BasicEventType?.GetField("eventName", any);
                 s_ChildrenProp = graphType.GetProperties(any)
                     .FirstOrDefault(p => p.Name == "children" && p.GetIndexParameters().Length == 0);
@@ -197,13 +204,13 @@ namespace VfxControl.EditorTools
 
                 // Debug-tab extras — optional; resolution failures just disable that one readout.
                 s_SystemNamesProp = graphType.GetProperty("systemNames", any);
-                s_ContextType = asm.GetType("UnityEditor.VFX.VFXContext");
+                s_ContextType = VfxType("VFXContext");
                 s_GetData = s_ContextType != null ? FindParameterless(s_ContextType, "GetData", any) : null;
-                s_DataParticleType = asm.GetType("UnityEditor.VFX.VFXDataParticle");
+                s_DataParticleType = VfxType("VFXDataParticle");
                 s_GetCurrentLayout = s_DataParticleType?.GetMethods(any)
                     .FirstOrDefault(m => m.Name == "GetCurrentAttributeLayout" && m.GetParameters().Length == 0);
                 s_DataSpaceProp = s_DataParticleType?.GetProperty("space", any); // VFXSpace (None/Local/World)
-                var sysNamesType = asm.GetType("UnityEditor.VFX.VFXSystemNames");
+                var sysNamesType = VfxType("VFXSystemNames");
                 s_GetUniqueSystemName = sysNamesType?.GetMethods(any)
                     .FirstOrDefault(m => m.Name == "GetUniqueSystemName" && m.GetParameters().Length == 1);
 
