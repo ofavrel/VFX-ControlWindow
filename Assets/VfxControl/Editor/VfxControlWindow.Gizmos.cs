@@ -595,10 +595,7 @@ namespace VfxControl.EditorTools
                 if (radLeaf != null)
                 {
                     foreach (var dir in s_SphereRadiusDirs)
-                    {
-                        float nr = RadialRadiusHandle(Vector3.zero, dir, radius, AxisColor(dir));
-                        if (!Mathf.Approximately(nr, radius)) { CommitGizmoFloat(radLeaf, nr); radius = nr; }
-                    }
+                        radius = RadiusHandleCommit(radLeaf, Vector3.zero, dir, radius, AxisColor(dir));
                 }
 
                 // arc handle in the equator plane (VFX uses Euler(-90,0,0) so the sweep
@@ -663,8 +660,7 @@ namespace VfxControl.EditorTools
                     {
                         if (!fullArc && i * 90f > arcDeg) continue; // only handles within the arc (VFX countVisible)
                         var dir = s_CircleRadiusDirs[i];
-                        float nr = RadialRadiusHandle(Vector3.zero, dir, radius, AxisColor(dir));
-                        if (!Mathf.Approximately(nr, radius)) { CommitGizmoFloat(radLeaf, nr); radius = nr; }
+                        radius = RadiusHandleCommit(radLeaf, Vector3.zero, dir, radius, AxisColor(dir));
                     }
 
                 if (arcLeaf != null)
@@ -737,16 +733,10 @@ namespace VfxControl.EditorTools
 
                 // major radius handle along +up (the angle-0 cross-section direction)
                 if (majLeaf != null)
-                {
-                    float nm = RadialRadiusHandle(Vector3.zero, Vector3.up, major, Handles.yAxisColor);
-                    if (!Mathf.Approximately(nm, major)) { CommitGizmoFloat(majLeaf, nm); major = nm; }
-                }
+                    major = RadiusHandleCommit(majLeaf, Vector3.zero, Vector3.up, major, Handles.yAxisColor);
                 // minor radius (thickness) handle at the angle-0 cap, offset out of the ring plane
                 if (minLeaf != null)
-                {
-                    float nt = RadialRadiusHandle(Vector3.up * major, Vector3.forward, minor, Handles.zAxisColor);
-                    if (!Mathf.Approximately(nt, minor)) { CommitGizmoFloat(minLeaf, nt); minor = nt; }
-                }
+                    minor = RadiusHandleCommit(minLeaf, Vector3.up * major, Vector3.forward, minor, Handles.zAxisColor);
 
                 if (arcLeaf != null)
                     ArcHandle(arcLeaf, Vector3.zero, major, arcDeg, Quaternion.Euler(-90f, 0f, 0f));
@@ -825,15 +815,9 @@ namespace VfxControl.EditorTools
 
                 // radius handles (radial cube sliders at the +forward extremity of each cap)
                 if (baseLeaf != null)
-                {
-                    float nb = RadialRadiusHandle(bottomCap, Vector3.forward, baseR, Handles.zAxisColor);
-                    if (!Mathf.Approximately(nb, baseR)) CommitGizmoFloat(baseLeaf, nb);
-                }
+                    RadiusHandleCommit(baseLeaf, bottomCap, Vector3.forward, baseR, Handles.zAxisColor);
                 if (topLeaf != null)
-                {
-                    float nt = RadialRadiusHandle(topCap, Vector3.forward, topR, Handles.zAxisColor);
-                    if (!Mathf.Approximately(nt, topR)) CommitGizmoFloat(topLeaf, nt);
-                }
+                    RadiusHandleCommit(topLeaf, topCap, Vector3.forward, topR, Handles.zAxisColor);
 
                 // height handle (slide the top cap along up)
                 if (heightLeaf != null)
@@ -871,6 +855,15 @@ namespace VfxControl.EditorTools
             Vector3 np = Handles.Slider(hp, dir,
                 HandleUtility.GetHandleSize(hp) * 0.08f, Handles.CubeHandleCap, 0f);
             return EditorGUI.EndChangeCheck() ? Mathf.Max(0f, Vector3.Dot(np - center, dir)) : radius;
+        }
+
+        // RadialRadiusHandle + commit: draws the slider and, if it moved, writes the new radius to
+        // `leaf`. Returns the (possibly new) radius so callers that reuse it can `radius = ...`.
+        float RadiusHandleCommit(VfxExposedParam leaf, Vector3 center, Vector3 dir, float radius, Color color)
+        {
+            float nr = RadialRadiusHandle(center, dir, radius, color);
+            if (leaf != null && !Mathf.Approximately(nr, radius)) CommitGizmoFloat(leaf, nr);
+            return nr;
         }
 
         // Arc handle, mirroring VFXGizmo.ArcGizmo: a Slider2D whose angle around the local

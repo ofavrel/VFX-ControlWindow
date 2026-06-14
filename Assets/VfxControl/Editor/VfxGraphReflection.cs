@@ -551,42 +551,55 @@ namespace VfxControl.EditorTools
         /// inspector's "Current Attribute Layout" (VFXDataParticle.GetCurrentAttributeLayout). The
         /// layout is [NonSerialized] — populated when the graph compiles — so a system is OMITTED
         /// (→ caller shows "—") until the graph has been compiled/opened this session.
+        // Enumerate each particle system's (buckets, uniqueName) once from the graph's current
+        // attribute layout — the shared traversal behind GetSystemAttributeWords/Layout. Walks the
+        // graph's children, keeps the particle-data contexts (deduped — contexts share one data per
+        // system), yields each system's BucketInfo[] and resolved name. Yields nothing (degrades
+        // silently) when the reflection handles or graph aren't available, or a system has no name.
+        static IEnumerable<(Array buckets, string name)> EnumerateSystemLayouts(VisualEffectAsset asset)
+        {
+            if (asset == null) yield break;
+            Resolve();
+            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
+                s_GetData == null || s_GetCurrentLayout == null) yield break;
+            if (!TryGetGraph(asset, out var graph)) yield break;
+            if (!(s_ChildrenProp.GetValue(graph) is IEnumerable children)) yield break;
+
+            var systemNames = s_SystemNamesProp?.GetValue(graph);
+            var seen = new HashSet<object>();
+            foreach (var child in children)
+            {
+                if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
+                object data;
+                try { data = s_GetData.Invoke(child, null); } catch { continue; }
+                if (data == null) continue;
+                if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
+                if (!seen.Add(data)) continue; // contexts share one data per system
+
+                if (!(s_GetCurrentLayout.Invoke(data, null) is Array buckets) || buckets.Length == 0) continue;
+
+                string name = null;
+                if (systemNames != null && s_GetUniqueSystemName != null)
+                    try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                if (!string.IsNullOrEmpty(name)) yield return (buckets, name);
+            }
+        }
+
         public static Dictionary<string, int> GetSystemAttributeWords(VisualEffectAsset asset)
         {
             var result = new Dictionary<string, int>();
-            if (asset == null) return result;
-            Resolve();
-            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
-                s_GetData == null || s_GetCurrentLayout == null) return result;
-
             try
             {
-                if (!TryGetGraph(asset, out var graph)) return result;
-                var systemNames = s_SystemNamesProp?.GetValue(graph);
-                var seen = new HashSet<object>();
-                if (s_ChildrenProp.GetValue(graph) is IEnumerable children)
-                    foreach (var child in children)
-                    {
-                        if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
-                        object data;
-                        try { data = s_GetData.Invoke(child, null); } catch { continue; }
-                        if (data == null) continue;
-                        if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
-                        if (!seen.Add(data)) continue; // contexts share one data per system
+                foreach (var (buckets, name) in EnumerateSystemLayouts(asset))
+                {
+                    if (s_BucketSizeField == null)
+                        s_BucketSizeField = buckets.GetType().GetElementType()?.GetField("size", InstanceAny);
+                    if (s_BucketSizeField == null) continue;
 
-                        if (!(s_GetCurrentLayout.Invoke(data, null) is Array buckets) || buckets.Length == 0) continue;
-                        if (s_BucketSizeField == null)
-                            s_BucketSizeField = buckets.GetType().GetElementType()?.GetField("size", InstanceAny);
-                        if (s_BucketSizeField == null) continue;
-
-                        int words = 0;
-                        foreach (var b in buckets) words += Convert.ToInt32(s_BucketSizeField.GetValue(b));
-
-                        string name = null;
-                        if (systemNames != null && s_GetUniqueSystemName != null)
-                            try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
-                        if (!string.IsNullOrEmpty(name)) result[name] = words;
-                    }
+                    int words = 0;
+                    foreach (var b in buckets) words += Convert.ToInt32(s_BucketSizeField.GetValue(b));
+                    result[name] = words;
+                }
             }
             catch (Exception e)
             {
@@ -609,27 +622,10 @@ namespace VfxControl.EditorTools
         public static Dictionary<string, List<VfxAttrField>> GetSystemAttributeLayout(VisualEffectAsset asset)
         {
             var result = new Dictionary<string, List<VfxAttrField>>();
-            if (asset == null) return result;
-            Resolve();
-            if (!s_Available || s_ChildrenProp == null || s_ContextType == null ||
-                s_GetData == null || s_GetCurrentLayout == null) return result;
-
             try
             {
-                if (!TryGetGraph(asset, out var graph)) return result;
-                var systemNames = s_SystemNamesProp?.GetValue(graph);
-                var seen = new HashSet<object>();
-                if (!(s_ChildrenProp.GetValue(graph) is IEnumerable children)) return result;
-                foreach (var child in children)
+                foreach (var (buckets, name) in EnumerateSystemLayouts(asset))
                 {
-                    if (child == null || !s_ContextType.IsInstanceOfType(child)) continue;
-                    object data;
-                    try { data = s_GetData.Invoke(child, null); } catch { continue; }
-                    if (data == null) continue;
-                    if (s_DataParticleType != null && !s_DataParticleType.IsInstanceOfType(data)) continue;
-                    if (!seen.Add(data)) continue; // contexts share one data per system
-
-                    if (!(s_GetCurrentLayout.Invoke(data, null) is Array buckets) || buckets.Length == 0) continue;
                     var elem = buckets.GetType().GetElementType();
                     if (s_BucketAttribsField == null) s_BucketAttribsField = elem?.GetField("attributes", InstanceAny);
                     if (s_BucketAttribsField == null) continue;
@@ -660,11 +656,7 @@ namespace VfxControl.EditorTools
                         }
                     }
                     if (fields.Count == 0) continue;
-
-                    string name = null;
-                    if (systemNames != null && s_GetUniqueSystemName != null)
-                        try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
-                    if (!string.IsNullOrEmpty(name)) result[name] = fields;
+                    result[name] = fields;
                 }
             }
             catch (Exception e)

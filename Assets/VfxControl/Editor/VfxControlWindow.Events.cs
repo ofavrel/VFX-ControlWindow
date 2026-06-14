@@ -32,17 +32,7 @@ namespace VfxControl.EditorTools
         // block in the graph. Its header carries a ★ pin (favorite) like a row. Returns 1.
         int AddSendEventSection(VisualElement host)
         {
-            string key = "play:events";
-            bool open = !_collapsed.Contains(key);
-
-            var group = MakeElement("vfx-group");
-            var header = MakeElement("vfx-group-header");
-            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
-            twirl.AddToClassList("vfx-group-twirl");
-            header.Add(twirl);
-            var titleLbl = new Label("Send Event");
-            titleLbl.AddToClassList("vfx-group-title");
-            header.Add(titleLbl);
+            var (header, content, _) = AddGroupShell(host, "play:events", "Send Event");
             // ★ pin: toggles the section's favorite (StopPropagation so it doesn't also collapse).
             var star = MakeIconButton(IsFav(kSendEventFavKey) ? "★" : "☆",
                 IsFav(kSendEventFavKey) ? "Unpin from Favorites" : "Pin to Favorites", () => ToggleFav(kSendEventFavKey));
@@ -50,25 +40,12 @@ namespace VfxControl.EditorTools
             star.EnableInClassList("vfx-group-pin--on", IsFav(kSendEventFavKey));
             star.RegisterCallback<ClickEvent>(e => e.StopPropagation());
             header.Add(star);
-            header.tooltip = "Click to expand/collapse";
-            header.RegisterCallback<ClickEvent>(e =>
-            {
-                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
-                _state.SaveCollapsed(_collapsed);
-                RebuildBodyOnly();
-            });
-            group.Add(header);
 
-            var content = MakeElement("vfx-group-content");
-            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
             // event buttons on top, sitting on a dark band (like the rail / section bands)
             var band = MakeElement("vfx-sendevent-band");
             band.Add(BuildEventChips());
             content.Add(band);
             content.Add(BuildEventPayloadEditor());    // payload list below
-            group.Add(content);
-
-            host.Add(group);
             return 1;
         }
 

@@ -84,31 +84,8 @@ namespace VfxControl.EditorTools
         // A collapsible Debug section group (the shared .vfx-group chrome; collapse key debug:<id>).
         void AddDebugGroup(VisualElement host, string id, string title, Action<VisualElement> buildContent)
         {
-            string key = "debug:" + id;
-            bool open = !_collapsed.Contains(key);
-
-            var group = MakeElement("vfx-group");
-            var header = MakeElement("vfx-group-header");
-            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
-            twirl.AddToClassList("vfx-group-twirl");
-            header.Add(twirl);
-            var titleLbl = new Label(title);
-            titleLbl.AddToClassList("vfx-group-title");
-            header.Add(titleLbl);
-            header.tooltip = "Click to expand/collapse";
-            header.RegisterCallback<ClickEvent>(e =>
-            {
-                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
-                _state.SaveCollapsed(_collapsed);
-                RebuildBodyOnly();
-            });
-            group.Add(header);
-
-            var content = MakeElement("vfx-group-content");
-            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            var (_, content, open) = AddGroupShell(host, "debug:" + id, title);
             if (open) buildContent(content);
-            group.Add(content);
-            host.Add(group);
         }
 
         // The 2-column stat grid. Sets the _dbg* label refs (cleared first so a stale refresh from

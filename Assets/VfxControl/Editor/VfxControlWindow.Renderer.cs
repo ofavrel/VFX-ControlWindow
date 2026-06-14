@@ -162,38 +162,9 @@ namespace VfxControl.EditorTools
             var visible = fields.Where(f => f.Section == id && show(f)).ToList();
             if (visible.Count == 0) return 0;
 
-            string key = "render:" + id;
             bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
-            bool open = forceOpen || !_collapsed.Contains(key);
-
-            var group = MakeElement("vfx-group");
-            var header = MakeElement("vfx-group-header");
-            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
-            twirl.AddToClassList("vfx-group-twirl");
-            header.Add(twirl);
-            var titleLbl = new Label(title);
-            titleLbl.AddToClassList("vfx-group-title");
-            header.Add(titleLbl);
-            var count = new Label(visible.Count.ToString());
-            count.AddToClassList("vfx-group-count");
-            header.Add(count);
-            if (!forceOpen)
-            {
-                header.tooltip = "Click to expand/collapse";
-                header.RegisterCallback<ClickEvent>(e =>
-                {
-                    if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
-                    _state.SaveCollapsed(_collapsed);
-                    RebuildBodyOnly();
-                });
-            }
-            group.Add(header);
-
-            var content = MakeElement("vfx-group-content");
-            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            var (_, content, _) = AddGroupShell(host, "render:" + id, title, visible.Count, forceOpen);
             foreach (var f in visible) content.Add(BuildRendererRow(f, so));
-            group.Add(content);
-            host.Add(group);
             return visible.Count;
         }
 

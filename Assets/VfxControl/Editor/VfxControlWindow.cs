@@ -579,6 +579,54 @@ namespace VfxControl.EditorTools
 
         // A collapsible top-level section on the All tab: a header (twirl + title) over a content
         // container whose display toggles. Collapse persists under "all:<title>" in _collapsed.
+        // Flip a collapse key, persist it, and rebuild the body. The single home for the
+        // "click a header to expand/collapse" gesture (the All-tab/struct headers add Alt-click
+        // bulk logic on top of their own handlers).
+        void ToggleCollapse(string key)
+        {
+            if (!_collapsed.Remove(key)) _collapsed.Add(key);
+            _state.SaveCollapsed(_collapsed);
+            RebuildBodyOnly();
+        }
+
+        // Build the collapsible shell of a `.vfx-group` section (twirl + title + optional count
+        // badge header, and an empty content container) into `host`, wired to the `_collapsed`
+        // key. `count` < 0 hides the badge; `forceOpen` (search active) forces-open and disables
+        // the toggle. Returns the header (so callers can append a ★ pin), the content to fill,
+        // and whether it's open (some sections only build content when open).
+        (VisualElement header, VisualElement content, bool open) AddGroupShell(
+            VisualElement host, string key, string title, int count = -1, bool forceOpen = false)
+        {
+            bool open = forceOpen || !_collapsed.Contains(key);
+
+            var group = MakeElement("vfx-group");
+            var header = MakeElement("vfx-group-header");
+            var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
+            twirl.AddToClassList("vfx-group-twirl");
+            header.Add(twirl);
+            var titleLbl = new Label(title);
+            titleLbl.AddToClassList("vfx-group-title");
+            header.Add(titleLbl);
+            if (count >= 0)
+            {
+                var countLbl = new Label(count.ToString());
+                countLbl.AddToClassList("vfx-group-count");
+                header.Add(countLbl);
+            }
+            if (!forceOpen)
+            {
+                header.tooltip = "Click to expand/collapse";
+                header.RegisterCallback<ClickEvent>(e => ToggleCollapse(key));
+            }
+            group.Add(header);
+
+            var content = MakeElement("vfx-group-content");
+            content.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
+            group.Add(content);
+            host.Add(group);
+            return (header, content, open);
+        }
+
         void AddAllSection(VisualElement body, string title, Action<VisualElement> buildContent)
         {
             string key = "all:" + title;
@@ -752,12 +800,7 @@ namespace VfxControl.EditorTools
             countLabel.AddToClassList("vfx-group-count");
             header.Add(countLabel);
             header.tooltip = "Click to expand/collapse";
-            header.RegisterCallback<ClickEvent>(e =>
-            {
-                if (_collapsed.Contains(key)) _collapsed.Remove(key); else _collapsed.Add(key);
-                _state.SaveCollapsed(_collapsed);
-                RebuildBodyOnly();
-            });
+            header.RegisterCallback<ClickEvent>(e => ToggleCollapse(key));
             group.Add(header);
 
             var content = MakeElement("vfx-group-content");
