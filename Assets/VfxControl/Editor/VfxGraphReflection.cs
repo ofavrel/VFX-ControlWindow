@@ -267,6 +267,7 @@ namespace VfxControl.EditorTools
             {
                 Debug.LogWarning($"[VFX Control] Could not bind to VFX Graph internals " +
                                  $"({VersionNote()}); properties will be uncategorized. ({e.Message})");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
                 s_Available = false;
             }
         }
@@ -413,6 +414,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read exposed properties: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
                 result.Clear();
             }
 
@@ -452,6 +454,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read event names: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
 
             return result;
@@ -490,6 +493,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read custom attributes: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
 
             return result;
@@ -578,6 +582,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read texture usage: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
             return result;
         }
@@ -655,6 +660,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read attribute layout: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
             return result;
         }
@@ -713,6 +719,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read attribute layout detail: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
             return result;
         }
@@ -777,6 +784,7 @@ namespace VfxControl.EditorTools
             catch (Exception e)
             {
                 Debug.LogWarning($"[VFX Control] Failed to read system spaces: {e.Message}");
+                if (Verbose) Debug.LogException(e); // full stack when diagnosing a package break
             }
             return result;
         }

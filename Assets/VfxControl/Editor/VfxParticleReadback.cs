@@ -479,6 +479,16 @@ namespace VfxControl.EditorTools
             RefreshParticleTable();
         }
 
+        // Total live particles across the selected instances (public runtime API) — the "all dead"
+        // signal used to clear the table when a system fully empties.
+        int LiveAliveCount()
+        {
+            int n = 0;
+            if (_all != null) foreach (var ve in _all) if (ve != null) n += ve.aliveParticleCount;
+            if (n == 0 && _primary != null) n = _primary.aliveParticleCount;
+            return n;
+        }
+
         // Rows = the slots stamped with the latest generation present (the most recently simulated
         // frame's particles); slots from older frames or never written are ignored. Iterating slots
         // ascending yields rows already grouped instance-major then particleId.
@@ -497,6 +507,17 @@ namespace VfxControl.EditorTools
                         int instance = s / kReadbackPerInstance;
                         if (instance != prevInstance) { _readbackInstanceCount++; prevInstance = instance; }
                     }
+
+            // The generation stamp is "newest present in the buffer", so a system that has fully
+            // emptied would otherwise freeze on its last live frame (no slot re-stamps a newer gen).
+            // Public aliveParticleCount is a reliable "all dead" signal: drop the stale rows so the
+            // table goes empty rather than showing dead particles.
+            if (_readbackRows.Count > 0 && LiveAliveCount() == 0)
+            {
+                _readbackRows.Clear();
+                _readbackInstanceCount = 0;
+            }
+
             SortReadbackRows(); // keep the user's chosen column sort applied across refreshes
             _particleTable.RefreshItems();
 

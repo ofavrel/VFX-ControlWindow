@@ -538,7 +538,10 @@ Sphere/Circle/Torus variants work with no extra code).
     buffer — and lists the slots stamped with that latest generation = the live particles this frame,
     grouped by instance (dead particles stop re-stamping and drop out;
     `OnReadbackGen`→`OnReadback`→`RefreshParticleTable`; helpbox when uninstrumented; count shows
-    `N · M instances`). **Stable rows** (an atomic-append ring was tried first but its slots advance
+    `N · M instances`). Because the stamp is "newest present in the buffer", a system that **fully
+    empties** would otherwise freeze on its last live frame; `RefreshParticleTable` guards that with
+    `LiveAliveCount()` (Σ public `aliveParticleCount` over the selection) — 0 alive → the rows are
+    cleared so the table goes empty. **Stable rows** (an atomic-append ring was tried first but its slots advance
     every frame → the list jumps and row counts are erratic; particleId is a stable address).
     **Scene overlay:** each attribute column header is name + an "eye" toggle (`MakeAttrHeader`/`UpdateEyeVisual`
     via `Column.makeHeader`/`bindHeader`; `.vfx-eye` dim→`.vfx-eye--on` bright; eye state persisted per-asset
@@ -651,7 +654,8 @@ See `~/.claude/projects/.../memory/offline-unity-compile-check.md`. Quick form:
 - Density toggle (compact/comfortable), full per-row update without a body rebuild.
 - Meta (Asset) pin/modified. Debug tab has stats grid (+ CPU/GPU/attr-memory) + per-system bars +
   Textures + opt-in particle-readback spreadsheet + Show Bounds; a fav/mod model and more visualizers
-  (internal VFX ones) are still TODO. Particle readback **works** (global-UAV confirmed) but is
-  **position+color only** (the fixed layout has room for more) and **opt-in** (needs the Custom HLSL
-  block). Likely next: more attribute columns (velocity/size/alive/lifetime…), buffer clearing so
-  dead-particle slots don't linger, and a smoother authoring path (auto-insert the block / a subgraph).
+  (internal VFX ones) are still TODO. Particle readback **works** (global-UAV confirmed), shows a
+  **curated standard-attribute set** (the `VfxReadbackRecord.Attrs` table — position/velocity/color/
+  size/age/lifetime/…), clears an emptied system via `LiveAliveCount()`, and is **opt-in** (needs the
+  Custom HLSL block). Likely next: a smoother authoring path (auto-insert the block / a subgraph) and
+  custom (user) attribute capture.
