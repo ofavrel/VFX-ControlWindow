@@ -14,10 +14,25 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
 
 ## Files
 
-- **`VfxControlWindow.cs`** — the window. Selection tracking, header,
-  mini-transport + playback clock, tabs, per-tab Favorites group, Properties tab
-  (search/chips/rail/groups/struct cards/rows), Renderer tab (sibling VFXRenderer settings), footer,
-  copy-paste, scene-view gizmos, multi-edit.
+- **`VfxControlWindow.cs`** + **`VfxControlWindow.<concern>.cs`** — the window, split into
+  one `partial class VfxControlWindow` per concern (same class, shared private state — the
+  split is purely for navigability, no behavior change). The core `VfxControlWindow.cs` holds
+  lifecycle, `Rebuild`/`PopulateActiveTab`/`BuildChrome`, the tab/rail/chip/footer chrome, the
+  All tab, favorites group, and small shared helpers. The concern partials:
+  - **`.Targeting.cs`** — selection → editable scene VFX (single/multi sharing one asset),
+    per-instance `SerializedObject`s, `SetValueAll`/`ResetAll` multi-edit, rail-section persistence.
+  - **`.Properties.cs`** — Properties tab: category groups, struct cards (flatten/inline/card),
+    typed value controls + `Bind`, constrain lock, copy-paste, category colors, enable gate, space icon.
+  - **`.Playback.cs`** — persistent mini-transport (scrub/play/step/loop/Rate) + Playback tab
+    `PField` options (Duration/Seed/Reseed/Initial Event).
+  - **`.Events.cs`** — the Playback tab's "Send Event" section: chips + the `VFXEventAttribute`
+    payload editor (built-in / graph-custom / free-custom rows), per-asset payload persistence.
+  - **`.Debug.cs`** — Debug tab live stats grid, CPU/GPU profiling markers, per-system bars,
+    texture usage, Show Bounds visualizer.
+  - **`.Readback.cs`** — opt-in per-particle attribute spreadsheet (GraphicsBuffer readback) +
+    its scene-view overlay.
+  - **`.Renderer.cs`** — Renderer tab: sibling `VFXRenderer` settings (`RField` rows).
+  - **`.Gizmos.cs`** — custom scene-view edit gizmos for spaceable struct properties.
 - **`VfxGraphReflection.cs`** — reflection bridge to the editor-internal VFX graph;
   `GetExposedParameters(asset)` → `List<VfxExposedParam>`, `GetEventNames(asset)` →
   custom Event-block names (`VFXBasicEvent.eventName` via `VFXGraph.children`), and
