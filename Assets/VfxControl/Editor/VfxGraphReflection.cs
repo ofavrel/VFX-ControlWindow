@@ -245,7 +245,7 @@ namespace VfxControl.EditorTools
                     m.GetParameters()[0].ParameterType.IsEnum);
                 var cpuMarkerEnum = s_CpuEffectMarker?.GetParameters()[0].ParameterType;
                 if (cpuMarkerEnum != null)
-                    try { s_CpuEffectMarkerArg = Enum.Parse(cpuMarkerEnum, "FullUpdate"); } catch { }
+                    try { s_CpuEffectMarkerArg = Enum.Parse(cpuMarkerEnum, "FullUpdate"); } catch (Exception e) { if (Verbose) Debug.LogException(e); }
                 s_CpuSystemMarker = veType.GetMethods(any).FirstOrDefault(m =>
                     m.Name == "GetCPUSystemMarkerName" && m.GetParameters().Length == 1 &&
                     m.GetParameters()[0].ParameterType == typeof(string));
@@ -639,7 +639,7 @@ namespace VfxControl.EditorTools
 
                 string name = null;
                 if (systemNames != null && s_GetUniqueSystemName != null)
-                    try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                    try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch (Exception e) { if (Verbose) Debug.LogException(e); }
                 if (!string.IsNullOrEmpty(name)) yield return (buckets, name);
             }
         }
@@ -780,7 +780,7 @@ namespace VfxControl.EditorTools
 
                     string name = null;
                     if (systemNames != null && s_GetUniqueSystemName != null)
-                        try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch { }
+                        try { name = s_GetUniqueSystemName.Invoke(systemNames, new[] { data }) as string; } catch (Exception e) { if (Verbose) Debug.LogException(e); }
                     if (!string.IsNullOrEmpty(name)) result[name] = space;
                 }
             }
@@ -810,8 +810,8 @@ namespace VfxControl.EditorTools
 
         // Profiling registration — required for the per-system CPU/GPU markers to be emitted
         // (mirrors VFXProfilingBoard.Attach). No-ops if the methods can't be resolved.
-        public static void RegisterForProfiling(VisualEffect ve) { Resolve(); try { s_Register?.Invoke(ve, null); } catch { } }
-        public static void UnregisterForProfiling(VisualEffect ve) { Resolve(); try { s_Unregister?.Invoke(ve, null); } catch { } }
+        public static void RegisterForProfiling(VisualEffect ve) { Resolve(); try { s_Register?.Invoke(ve, null); } catch (Exception e) { if (Verbose) Debug.LogException(e); } }
+        public static void UnregisterForProfiling(VisualEffect ve) { Resolve(); try { s_Unregister?.Invoke(ve, null); } catch (Exception e) { if (Verbose) Debug.LogException(e); } }
         public static bool IsRegisteredForProfiling(VisualEffect ve)
         {
             Resolve();

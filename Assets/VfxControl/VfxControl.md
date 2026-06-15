@@ -549,7 +549,11 @@ Sphere/Circle/Torus variants work with no extra code).
     `SelectionType.Multiple` (Ctrl/Shift-click several particles, capped at `kMaxDebugParticles`=24);
     selection is tracked by stable **slots** (`OnParticleSelectionChanged` → `_particleSelSlots`,
     re-pinned in `RefreshParticleTable` so each follows its particle across sort/refresh and drops when it
-    dies). When ≥1 row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`) loops the
+    dies). **Alt+click a row → frame the Scene view** on the selected particles: a trickle-down
+    `PointerDownEvent` defers `FrameSelectedParticles` (so the selection has settled), which unions each
+    slot's `TryGetParticleBounds` (world pos + `ParticleHalfExtent`, the same size·scale extent the overlay
+    draws — shared helper) and calls `SceneView.lastActiveSceneView.Frame` (min box `kFrameMinSize` so a
+    tiny particle doesn't over-zoom; works regardless of eye state). When ≥1 row is selected and ≥1 eye is on, `DrawParticleOverlay` (in `OnSceneGui`) loops the
     selected slots and per particle (`DrawParticleMarker`) draws a camera-facing **wireframe quad**
     (`Handles.DrawPolyLine`, sized by size·scale) + a center `Handles.DotHandleCap` (constant screen
     size) + a translucent grey box (`DrawLabelBoxScreen`,

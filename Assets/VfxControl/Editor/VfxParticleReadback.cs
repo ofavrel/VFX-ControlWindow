@@ -72,6 +72,7 @@ namespace VfxControl.EditorTools
         private readonly HashSet<string> _particleEyes = new HashSet<string>(); // eye-ON attributes, by VfxReadbackRecord.Attr.Layout
         private readonly List<int> _particleSelSlots = new List<int>(); // selected particle SLOTs (stable; drives the overlay)
         private const int kMaxDebugParticles = 24;       // cap on simultaneously-overlaid particles (perf/clutter)
+        private const float kFrameMinSize = 0.5f;        // min world box when framing so a tiny particle doesn't over-zoom
         private int _readbackPosSpace;                   // sim space of the position-bearing system: 1 Local, else World/none
         private VisualEffectAsset _readbackBufferAsset;  // asset whose data is currently in the shared buffer (wipe on change)
         private const string kParticleEyesKeyPrefix = "vfxctrl.particleEyes."; // SessionState, per asset GUID
@@ -130,11 +131,19 @@ namespace VfxControl.EditorTools
             // The spreadsheet. Clicking a column header sorts by it (toggles asc/desc); the sort is
             // re-applied on every readback so it sticks as the data refreshes. Multi-row selection drives
             // the Scene overlay (tracked by stable slots, see OnParticleSelectionChanged; capped at
-            // kMaxDebugParticles). Ctrl/Shift-click to select several particles.
+            // kMaxDebugParticles). Ctrl/Shift-click to select several particles; Alt+click frames the
+            // selection in the Scene view.
             var table = new MultiColumnListView { showBoundCollectionSize = false, sortingMode = ColumnSortingMode.Custom };
             table.columnSortingChanged += () => { SortReadbackRows(); table.RefreshItems(); };
             table.selectionType = SelectionType.Multiple;
             table.selectionChanged += _ => OnParticleSelectionChanged();
+            // Alt+click a row → frame it in the Scene view. Deferred so the ListView's selection has
+            // settled first (and so re-Alt+clicking an already-selected row still frames it).
+            table.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.altKey) table.schedule.Execute(FrameSelectedParticles).ExecuteLater(0);
+            }, TrickleDown.TrickleDown);
+            table.tooltip = "Alt+click a row to frame the particle in the Scene view.";
             table.AddToClassList("vfx-particles-table");
             table.columns.Add(new Column
             {
@@ -322,6 +331,36 @@ namespace VfxControl.EditorTools
                     if (_particleSelSlots.Count >= kMaxDebugParticles) break;
                 }
             SceneView.RepaintAll();
+        }
+
+        // World-space AABB of a particle, sized from its own size · scale (same extent the overlay
+        // draws). False for a slot whose position can't be read (dead/empty this generation).
+        private bool TryGetParticleBounds(int slot, out Bounds bounds)
+        {
+            bounds = default;
+            if (!TryGetParticleWorld(slot, out var world)) return false;
+            bounds = new Bounds(world, Vector3.one * (2f * ParticleHalfExtent(slot)));
+            return true;
+        }
+
+        // Frame the Scene View on the combined bounds of the selected particles (Alt+click a row).
+        // A minimum box keeps a tiny particle from zooming to an extreme close-up; live slots only.
+        private void FrameSelectedParticles()
+        {
+            var sv = SceneView.lastActiveSceneView;
+            if (sv == null || _particleSelSlots.Count == 0) return;
+
+            bool any = false; Bounds total = default;
+            foreach (int slot in _particleSelSlots)
+                if (TryGetParticleBounds(slot, out var b))
+                {
+                    if (!any) { total = b; any = true; }
+                    else total.Encapsulate(b);
+                }
+            if (!any) return;
+
+            total.size = Vector3.Max(total.size, Vector3.one * kFrameMinSize);
+            sv.Frame(total, instant: false); // smooth pan/zoom; SceneView.Frame is public API
         }
 
         // Read one float of a particle's record (delegates to VfxReadbackRecord.Val over the buffer).
@@ -567,21 +606,26 @@ namespace VfxControl.EditorTools
                     DrawParticleMarker(slot);
         }
 
-        private void DrawParticleMarker(int slot)
+        // Half-extent of a particle from its own size · scale (defaults size≈0.1, scale=1 when unused).
+        private float ParticleHalfExtent(int slot)
         {
-            if (!TryGetParticleWorld(slot, out var world)) return;
-
-            // Half-extent from the particle's own size · scale (defaults size≈0.1, scale=1 when unused),
-            // and the camera's right/up so the quad faces the viewer and the box hugs its corner.
             float pSize = 0.1f, sx = 1f, sy = 1f, sz = 1f;
-            for (int k = 0; k < VfxReadbackRecord.Attrs.Length; k++)
+            foreach (var a in VfxReadbackRecord.Attrs)
             {
-                var a = VfxReadbackRecord.Attrs[k];
                 if (a.Layout == "size") pSize = RbVal(slot, a.Float);
                 else if (a.Layout == "scaleX")
                 { sx = RbVal(slot, a.Float); sy = RbVal(slot, a.Float + 1); sz = RbVal(slot, a.Float + 2); }
             }
-            float half = 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
+            return 0.5f * Mathf.Abs(pSize) * Mathf.Max(Mathf.Abs(sx), Mathf.Max(Mathf.Abs(sy), Mathf.Abs(sz)));
+        }
+
+        private void DrawParticleMarker(int slot)
+        {
+            if (!TryGetParticleWorld(slot, out var world)) return;
+
+            // Half-extent from the particle's own size · scale; the camera's right/up so the quad
+            // faces the viewer and the box hugs its corner.
+            float half = ParticleHalfExtent(slot);
             Camera cam = Camera.current;
             Vector3 cr = cam != null ? cam.transform.right : Vector3.right;
             Vector3 cu = cam != null ? cam.transform.up : Vector3.up;
