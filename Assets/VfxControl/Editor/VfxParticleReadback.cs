@@ -127,7 +127,7 @@ namespace VfxControl.EditorTools
             // fall back to a small default set if the graph layout isn't available yet (not compiled).
             BuildReadbackColumns();
 
-            // Controls: Capture · Auto · row count.
+            // Controls: Capture · Auto · Export CSV · row count.
             var bar = MakeElement("vfx-particles-bar");
             var capture = new Button(() => _readbackCaptureOnce = true) { text = "Capture" };
             capture.AddToClassList("vfx-particles-capture");
@@ -136,6 +136,9 @@ namespace VfxControl.EditorTools
             auto.AddToClassList("vfx-particles-auto");
             auto.RegisterValueChangedCallback(e => _readbackAuto = e.newValue);
             bar.Add(auto);
+            var export = new Button(ExportCsv) { text = "Export CSV", tooltip = "Export the current captured frame's particle attributes to a CSV file." };
+            export.AddToClassList("vfx-particles-export");
+            bar.Add(export);
             _readbackCountLabel = new Label();
             _readbackCountLabel.AddToClassList("vfx-particles-count");
             bar.Add(_readbackCountLabel);
@@ -312,6 +315,67 @@ namespace VfxControl.EditorTools
             }
 
             LoadParticleEyes(asset);
+        }
+
+        // Export the current captured frame (the rows currently in the table, in their displayed sort
+        // order) to a CSV the user picks. One row per particle; multi-component attributes split into
+        // X/Y/Z (Color → R/G/B) columns so the sheet is analyzable, all attributes included regardless of
+        // column-hide state. Values are invariant-culture so a comma-decimal locale can't corrupt the CSV.
+        private void ExportCsv()
+        {
+            if (_readbackRows.Count == 0 || _readbackData == null)
+            {
+                EditorUtility.DisplayDialog("Export Particles", "No particle data to export — Capture a frame first.", "OK");
+                return;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("System,Instance,ParticleId");
+            foreach (var a in _readbackCols)
+            {
+                if (a.Kind == VfxReadbackRecord.Kind.Color)
+                    sb.Append(',').Append(Csv(a.Title + " R")).Append(',').Append(Csv(a.Title + " G")).Append(',').Append(Csv(a.Title + " B"));
+                else if (a.Count == 3)
+                    sb.Append(',').Append(Csv(a.Title + " X")).Append(',').Append(Csv(a.Title + " Y")).Append(',').Append(Csv(a.Title + " Z"));
+                else
+                    sb.Append(',').Append(Csv(a.Title));
+            }
+            sb.Append('\n');
+
+            foreach (var slot in _readbackRows)
+            {
+                int sys = SystemOf(slot), inst = InstanceOf(slot);
+                string nm = inst < _readbackInstanceNames.Length ? _readbackInstanceNames[inst] : null;
+                sb.Append(Csv(sys < _systemNames.Count ? _systemNames[sys] : $"System {sys}")).Append(',');
+                sb.Append(Csv(nm ?? inst.ToString())).Append(',');
+                sb.Append(ParticleIdOf(slot));
+                foreach (var a in _readbackCols)
+                {
+                    if (a.Kind == VfxReadbackRecord.Kind.Alive) sb.Append(',').Append(RbVal(slot, a.Float) > 0.5f ? 1 : 0);
+                    else if (a.Kind == VfxReadbackRecord.Kind.Id) sb.Append(',').Append((uint)Mathf.Max(0f, RbVal(slot, a.Float)));
+                    else if (a.Count == 3) sb.Append(',').Append(F(RbVal(slot, a.Float))).Append(',').Append(F(RbVal(slot, a.Float + 1))).Append(',').Append(F(RbVal(slot, a.Float + 2)));
+                    else sb.Append(',').Append(F(RbVal(slot, a.Float)));
+                }
+                sb.Append('\n');
+            }
+
+            string suggested = (_primary != null ? _primary.name : "vfx") + "_particles.csv";
+            string path = EditorUtility.SaveFilePanel("Export Particles CSV", "", suggested, "csv");
+            if (string.IsNullOrEmpty(path)) return;
+            try { System.IO.File.WriteAllText(path, sb.ToString()); }
+            catch (System.Exception e) { EditorUtility.DisplayDialog("Export Particles", "Failed to write CSV:\n" + e.Message, "OK"); return; }
+            if (path.StartsWith(Application.dataPath)) AssetDatabase.Refresh(); // surface it if saved under Assets/
+        }
+
+        private static string F(float v) => v.ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
+
+        // Quote a CSV field iff it contains a comma/quote/newline (system & GameObject names can).
+        private static string Csv(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            if (s.IndexOf(',') >= 0 || s.IndexOf('"') >= 0 || s.IndexOf('\n') >= 0 || s.IndexOf('\r') >= 0)
+                return "\"" + s.Replace("\"", "\"\"") + "\"";
+            return s;
         }
 
         // "Wire each block's systemId — 0: Sparks · 1: Smoke" (hidden for 0/1 systems). Tells the user

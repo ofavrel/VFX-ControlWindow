@@ -563,7 +563,12 @@ Sphere/Circle/Torus variants work with no extra code).
     buffer — and lists the slots stamped with that latest generation = the live particles this frame,
     grouped by instance (dead particles stop re-stamping and drop out;
     `OnReadbackGen`→`OnReadback`→`RefreshParticleTable`; helpbox when uninstrumented; count shows
-    `N · M instances`). Because the stamp is "newest present in the buffer", a system that **fully
+    `N · M instances`). An **Export CSV** toolbar button (`ExportCsv`) writes the current captured frame
+    (`_readbackRows` in display order) to a user-picked `.csv` via `EditorUtility.SaveFilePanel`: header
+    `System,Instance,ParticleId,…`, multi-component attributes split into X/Y/Z (Color → R/G/B) columns,
+    all attributes regardless of column-hide state, invariant-culture (`G7`) values + RFC-style quoting
+    (`Csv`) so names with commas are safe; refreshes AssetDatabase if saved under `Assets/`. Because the
+    stamp is "newest present in the buffer", a system that **fully
     empties** would otherwise freeze on its last live frame; `RefreshParticleTable` guards that with
     `LiveAliveCount()` (Σ public `aliveParticleCount` over the selection) — 0 alive → the rows are
     cleared so the table goes empty. **Stable rows** (an atomic-append ring was tried first but its slots advance

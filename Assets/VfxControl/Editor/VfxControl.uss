@@ -867,6 +867,9 @@
 .vfx-particles-auto {
     margin-right: 8px;
 }
+.vfx-particles-export {
+    margin-right: 8px;
+}
 .vfx-particles-count {
     flex-grow: 1;
     -unity-text-align: middle-right;
