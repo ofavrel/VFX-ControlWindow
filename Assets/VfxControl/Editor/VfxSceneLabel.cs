@@ -12,8 +12,8 @@ namespace VfxControl.EditorTools
 {
     internal static class VfxSceneLabel
     {
-        static GUIStyle s_style;
-        static readonly Dictionary<Color, Texture2D> s_bgCache = new Dictionary<Color, Texture2D>(); // one bg tex per color
+        private static GUIStyle s_style;
+        private static readonly Dictionary<Color, Texture2D> s_bgCache = new Dictionary<Color, Texture2D>(); // one bg tex per color
 
         // A translucent rounded box (color `bg`) + rich text whose top-left (bottomLeft=false) or
         // bottom-left (bottomLeft=true → box grows upward) corner is placed at the GUI-space `anchor`.
@@ -45,7 +45,7 @@ namespace VfxControl.EditorTools
         }
 
         // A rounded-rect texture with a 1px feathered edge, for a 9-sliced label background.
-        static Texture2D MakeRoundedTexture(int size, int radius, Color fill)
+        private static Texture2D MakeRoundedTexture(int size, int radius, Color fill)
         {
             var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
             {

@@ -12,9 +12,9 @@ namespace VfxControl.EditorTools
 {
     internal sealed class VfxControlState
     {
-        const string Prefix = "vfxctrl";
+        private const string Prefix = "vfxctrl";
 
-        readonly string _guid; // asset GUID, or "none"
+        private readonly string _guid; // asset GUID, or "none"
 
         public VfxControlState(string assetGuid)
         {
@@ -34,9 +34,9 @@ namespace VfxControl.EditorTools
 
         // ---- persistent (EditorPrefs, per asset) ----
 
-        string FavKey => $"{Prefix}.{_guid}.favorites";
-        string CollapsedKey => $"{Prefix}.{_guid}.collapsed";
-        string ConstrainedKey => $"{Prefix}.{_guid}.constrained";
+        private string FavKey => $"{Prefix}.{_guid}.favorites";
+        private string CollapsedKey => $"{Prefix}.{_guid}.collapsed";
+        private string ConstrainedKey => $"{Prefix}.{_guid}.constrained";
 
         public HashSet<string> LoadFavorites() => LoadSet(FavKey);
         public void SaveFavorites(HashSet<string> set) => SaveSet(FavKey, set);
@@ -48,7 +48,7 @@ namespace VfxControl.EditorTools
         public HashSet<string> LoadConstrained() => LoadSet(ConstrainedKey);
         public void SaveConstrained(HashSet<string> set) => SaveSet(ConstrainedKey, set);
 
-        static HashSet<string> LoadSet(string key)
+        private static HashSet<string> LoadSet(string key)
         {
             var raw = EditorPrefs.GetString(key, "");
             var set = new HashSet<string>();
@@ -58,7 +58,7 @@ namespace VfxControl.EditorTools
             return set;
         }
 
-        static void SaveSet(string key, HashSet<string> set)
+        private static void SaveSet(string key, HashSet<string> set)
         {
             EditorPrefs.SetString(key, string.Join("\n", set));
         }

@@ -5,73 +5,68 @@
 // the conflict with the VFX package's own AdvancedVisualEffectEditor. The window
 // tracks the current selection and rebuilds when it changes.
 //
-// First pass: full chrome (header, persistent mini-transport, divider, tabs,
-// footer) + a working Properties tab (search, filter chips, category rail,
-// pinned tray, collapsible category groups, typed value controls bound through
-// the serialized property sheet, per-property reset, favorites). Playback and
-// Debug tabs are stubbed for a later pass.
+// This core partial holds lifecycle, Rebuild/PopulateActiveTab/BuildChrome, the
+// tab/rail/chip/footer chrome, the All tab, the Favorites group, and shared helpers;
+// each tab (Properties/Playback/Debug/Renderer) lives in its own VfxControlWindow.<concern> partial.
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.Profiling;
-using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
-using VfxControl.EditorTools;
 using Object = UnityEngine.Object;
 
 namespace VfxControl.EditorTools
 {
     public partial class VfxControlWindow : EditorWindow
     {
-        const string UssPath = "Assets/VfxControl/Editor/VfxControl.uss";
-        const long kTickMs = 33; // ~30 fps clock (playback scrub + live stat refresh)
+        private const string UssPath = "Assets/VfxControl/Editor/VfxControl.uss";
+        private const long kTickMs = 33; // ~30 fps clock (playback scrub + live stat refresh)
 
         // Debug ▸ Particles spreadsheet + scene overlay — a self-contained subsystem fed the current
         // selection via SetTarget and driven by Build/Pump/DrawOverlay/Dispose (owns its GPU buffers).
-        readonly VfxParticleReadback _readback = new VfxParticleReadback();
+        private readonly VfxParticleReadback _readback = new VfxParticleReadback();
 
         // --- ui state ---
-        VfxControlState _state;
-        HashSet<string> _favorites = new HashSet<string>();
-        HashSet<string> _collapsed = new HashSet<string>();
-        HashSet<string> _constrained = new HashSet<string>(); // proportional-edit vectors
-        string _search = "";
-        string _filter = "all";   // all | fav | mod
-        string _tab = "all";      // all | props | play | debug | render
+        private VfxControlState _state;
+        private HashSet<string> _favorites = new HashSet<string>();
+        private HashSet<string> _collapsed = new HashSet<string>();
+        private HashSet<string> _constrained = new HashSet<string>(); // proportional-edit vectors
+        private string _search = "";
+        private string _filter = "all";   // all | fav | mod
+
+        private string _tab = "all";      // all | props | play | debug | render
         // per-tab rail section ("all" or a section id); the All tab has no rail.
-        readonly Dictionary<string, string> _sections = new Dictionary<string, string>();
+        private readonly Dictionary<string, string> _sections = new Dictionary<string, string>();
 
         // tab descriptors (id/label/badge/rail sections/body builder), rebuilt each Rebuild.
-        List<TabDef> _tabDefs;
+        private List<TabDef> _tabDefs;
 
         // --- live element refs ---
-        VisualElement _miniFill;
-        Label _timeLabel, _liveLabel, _footNote;
-        Button _resetAllBtn, _playBtn, _loopBtn;
-        Image _playIcon;
-        Slider _rateSlider; // Play Rate strip under the transport (resynced by UpdateLive)
+        private VisualElement _miniFill;
+        private Label _timeLabel, _liveLabel, _footNote;
+        private Button _resetAllBtn, _playBtn, _loopBtn;
+        private Image _playIcon;
+        private Slider _rateSlider; // Play Rate strip under the transport (resynced by UpdateLive)
 
         // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
         // _tab is pinned). Deliberately NOT [SerializeField] — a serialized solo flag bakes the lean
         // state into the saved window layout, so a torn-off window comes back lean every session and
         // strands the Asset field/transport. Session-only instead: a pop-out reverts to a full window
         // after a domain reload / restart (re-tear-off if wanted).
-        string _soloTab;
+        private string _soloTab;
         // persistent chrome containers: the search field is built ONCE (so typing never
         // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
-        ToolbarSearchField _searchField;
-        VisualElement _chipsHost, _tabsHost, _railContainer, _tabBody;
-        float _scrubT;
+        private ToolbarSearchField _searchField;
+        private VisualElement _chipsHost, _tabsHost, _railContainer, _tabBody;
+        private float _scrubT;
 
         // A tab: its id/label, optional badge count, and (when it has a rail) the rail's
         // sections beyond "All". `Build` fills the body for the current search/section/filter.
-        sealed class TabDef
+        private sealed class TabDef
         {
             public string Id;
             public string Label;
@@ -84,7 +79,7 @@ namespace VfxControl.EditorTools
 
         // A rail entry. Dot is drawn only when HasDot (category accents); section tabs
         // like Probes/Additional render dot-less like the "All" button.
-        sealed class SectionDef
+        private sealed class SectionDef
         {
             public string Id;
             public string Label;
@@ -109,7 +104,7 @@ namespace VfxControl.EditorTools
         // NOTE: kept off the "Window/VFX Control" path — a MenuItem that is a prefix
         // of another turns the shorter one into a submenu and hides its command.
         [MenuItem("Tools/VFX Control/Diagnose Target")]
-        static void Diagnose()
+        private static void Diagnose()
         {
             var go = Selection.activeGameObject;
             var ve = go != null ? go.GetComponent<VisualEffect>() : Selection.activeObject as VisualEffect;
@@ -137,7 +132,7 @@ namespace VfxControl.EditorTools
             finally { VfxGraphReflection.Verbose = false; }
         }
 
-        void OnEnable()
+        private void OnEnable()
         {
             _duration = VfxControlState.GetTimelineDuration();
             _loop = VfxControlState.GetLoop();
@@ -151,7 +146,7 @@ namespace VfxControl.EditorTools
             Rebuild();
         }
 
-        void OnDisable()
+        private void OnDisable()
         {
             StopProfiling(); // release the VFX profiling registration we requested for timing readouts
             _readback.Dispose(); // release the particle-readback GPU buffers
@@ -164,7 +159,7 @@ namespace VfxControl.EditorTools
 
         // Fired after assets are imported (e.g. a .vfx recompiled + saved). The graph
         // may now expose new properties/categories, so force a fresh parameter rebuild.
-        void OnProjectChanged()
+        private void OnProjectChanged()
         {
             if (_effect == null) return; // also true if the component was destroyed
             if (_effect.visualEffectAsset != null)
@@ -173,7 +168,7 @@ namespace VfxControl.EditorTools
             Rebuild();
         }
 
-        void OnSelectionChange()
+        private void OnSelectionChange()
         {
             var prev = _effect;
             var prevHint = _selectionHint;
@@ -185,7 +180,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        void OnUndoRedo()
+        private void OnUndoRedo()
         {
             UpdateAllSos();
             Rebuild();
@@ -193,7 +188,7 @@ namespace VfxControl.EditorTools
 
         // ------------------------------------------------------------------ build
 
-        void Rebuild()
+        private void Rebuild()
         {
             var root = rootVisualElement;
             root.Clear();
@@ -262,7 +257,7 @@ namespace VfxControl.EditorTools
 
         // The ordered tab set. Counts/sections read live state, so this is rebuilt each
         // structural Rebuild (cheap). The "All" tab opts out of the rail (HasRail=false).
-        List<TabDef> BuildTabDefs() => new List<TabDef>
+        private List<TabDef> BuildTabDefs() => new List<TabDef>
         {
             new TabDef { Id = "all", Label = "All", HasRail = false, Build = BuildAllTab, ChipCounts = AllChipCounts },
             new TabDef
@@ -282,29 +277,27 @@ namespace VfxControl.EditorTools
             },
         };
 
-        (int leaf, int fav, int mod) PropertyChipCounts() => (
+        private (int leaf, int fav, int mod) PropertyChipCounts() => (
             _params.Count(p => !p.IsStruct),
             _params.Count(p => !p.IsStruct && IsFav(FavKeyOf(p))),
             VfxPropertySheet.CountModified(_so, _params));
 
         // The All tab aggregates properties + renderer (playback has no fav/mod model yet).
-        (int leaf, int fav, int mod) AllChipCounts()
+        private (int leaf, int fav, int mod) AllChipCounts()
         {
             var p = PropertyChipCounts();
             var r = RendererChipCounts();
             return (p.leaf + r.leaf, p.fav + r.fav, p.mod + r.mod);
         }
 
-        TabDef ActiveTabDef()
+        private TabDef ActiveTabDef()
         {
             if (_tabDefs == null) return null;
             return _tabDefs.FirstOrDefault(t => t.Id == _tab) ?? _tabDefs[0];
         }
 
-        static List<SectionDef> NoSections() => new List<SectionDef>();
-
         // Properties sections = the distinct categories, in graph order, each with its accent dot.
-        List<SectionDef> PropertySections()
+        private List<SectionDef> PropertySections()
         {
             var cats = new List<string>();
             foreach (var p in _params)
@@ -316,7 +309,7 @@ namespace VfxControl.EditorTools
         }
 
         // Renderer sections mirror the two IMGUI foldouts.
-        static List<SectionDef> RendererSections() => new List<SectionDef>
+        private static List<SectionDef> RendererSections() => new List<SectionDef>
         {
             new SectionDef { Id = "probes", Label = "Probes" },
             new SectionDef { Id = "additional", Label = "Additional Settings" },
@@ -324,14 +317,14 @@ namespace VfxControl.EditorTools
 
         // Playback sections: the setting rows live under "Playback options"; the event controls
         // get their own "Send Event" section (same collapsible group + rail style as the rest).
-        static List<SectionDef> PlaybackSections() => new List<SectionDef>
+        private static List<SectionDef> PlaybackSections() => new List<SectionDef>
         {
             new SectionDef { Id = "options", Label = "Playback options" },
             new SectionDef { Id = "events", Label = "Send Event" },
         };
 
         // Debug sections: the live stat grid, per-system capacity bars, texture usage, visualizers.
-        static List<SectionDef> DebugSections() => new List<SectionDef>
+        private static List<SectionDef> DebugSections() => new List<SectionDef>
         {
             new SectionDef { Id = "live", Label = "Live statistics" },
             new SectionDef { Id = "systems", Label = "Systems" },
@@ -342,7 +335,7 @@ namespace VfxControl.EditorTools
 
         // Search + chips chrome. Built once per Rebuild; the search field reference is kept
         // so PopulateActiveTab never recreates it (preserving focus while typing).
-        VisualElement BuildChrome()
+        private VisualElement BuildChrome()
         {
             var subbar = MakeElement("vfx-subbar");
 
@@ -365,7 +358,7 @@ namespace VfxControl.EditorTools
 
         // Rebuild only the parts that depend on the active tab / filter / search / section,
         // leaving the search field (and the rest of the chrome) intact.
-        void PopulateActiveTab()
+        private void PopulateActiveTab()
         {
             if (_tabBody == null) return;
             var def = ActiveTabDef();
@@ -386,7 +379,7 @@ namespace VfxControl.EditorTools
             UpdateFooter();
         }
 
-        void PopulateTabs()
+        private void PopulateTabs()
         {
             if (_tabsHost == null) return;
             // Pop-out (solo) windows show a single pinned tab — hide the strip entirely.
@@ -397,7 +390,7 @@ namespace VfxControl.EditorTools
                 _tabsHost.Add(MakeTab(def.Id, def.Label, def.Count));
         }
 
-        void PopulateChips()
+        private void PopulateChips()
         {
             if (_chipsHost == null) return;
             _chipsHost.Clear();
@@ -408,12 +401,12 @@ namespace VfxControl.EditorTools
             _chipsHost.Add(MakeChip("mod", "Modified", modCount));
         }
 
-        VisualElement BuildHeader()
+        private VisualElement BuildHeader()
         {
             var header = MakeElement("vfx-header");
-            var title = new Label("VFX Control");
-            title.AddToClassList("vfx-title");
-            header.Add(title);
+            var titleLabel = new Label("VFX Control");
+            titleLabel.AddToClassList("vfx-title");
+            header.Add(titleLabel);
             if (_effect != null)
             {
                 var sub = new Label(_effects.Count > 1
@@ -427,7 +420,7 @@ namespace VfxControl.EditorTools
 
         // The window's target: an explicit picker for a Visual Effect component in
         // the scene Hierarchy (drag a GameObject in, or use the object picker).
-        VisualElement BuildMetaSection()
+        private VisualElement BuildMetaSection()
         {
             var meta = MakeElement("vfx-meta");
 
@@ -455,7 +448,7 @@ namespace VfxControl.EditorTools
             return meta;
         }
 
-        Button MakeTab(string id, string label, int count)
+        private Button MakeTab(string id, string label, int count)
         {
             // Use child Labels (not the Button's intrinsic text) so the label and the
             // count badge flow as flex items left-to-right instead of overlapping.
@@ -495,7 +488,7 @@ namespace VfxControl.EditorTools
         // Open the given tab in its own dockable VfxControlWindow ("solo" mode): a distinct
         // instance pinned to one tab, following scene selection like the main window. Per-asset
         // state (favorites/collapsed/payloads) is shared via EditorPrefs/SessionState.
-        static void OpenSolo(string tabId, string label)
+        private static void OpenSolo(string tabId, string label)
         {
             var w = CreateWindow<VfxControlWindow>();
             w._soloTab = tabId;
@@ -511,7 +504,7 @@ namespace VfxControl.EditorTools
         // ------------------------------------------------------------------ playback tab
 
         // Does a field/section label match the current search query? (empty query = match all)
-        bool SearchMatches(string label)
+        private bool SearchMatches(string label)
         {
             string q = _search.Trim().ToLowerInvariant();
             return string.IsNullOrEmpty(q) || (label != null && label.ToLowerInvariant().Contains(q));
@@ -521,7 +514,7 @@ namespace VfxControl.EditorTools
         // in one scroll with no section rail. Search still filters each block (the section is
         // forced to "all" because this tab has no rail). Each block sits under a collapsible
         // top-level header (AddAllSection); a unified Favorites group sits above them.
-        void BuildAllTab(VisualElement body)
+        private void BuildAllTab(VisualElement body)
         {
             // One renderer SerializedObject + fields, shared by the unified pinned group and the
             // Renderer section below (so both edit the same instance and stay in sync).
@@ -531,7 +524,7 @@ namespace VfxControl.EditorTools
             if (renderers.Length > 0)
             {
                 rendererSo = new SerializedObject(renderers.Cast<Object>().ToArray());
-                rendererFields = BuildRendererFields(rendererSo, renderers, GetRendererDefaults());
+                rendererFields = BuildRendererFields(rendererSo, GetRendererDefaults());
             }
             _rendererRows = new List<(VisualElement, RField)>(); // reset before any renderer row
 
@@ -557,14 +550,14 @@ namespace VfxControl.EditorTools
         // A non-folding All-tab row styled like the section dividers, but it JUMPS to the Debug
         // tab instead of expanding. Carries a live one-line teaser (_dbgTeaser, refreshed by
         // RefreshDebugStats) so the All tab still surfaces live stats at a glance.
-        void AddDebugShortcut(VisualElement body)
+        private void AddDebugShortcut(VisualElement body)
         {
             _dbgTeaser = null;
             var head = MakeElement("vfx-allsection-head");
             head.AddToClassList("vfx-allsection-head--link");
-            var title = new Label("Debug");
-            title.AddToClassList("vfx-allsection-title");
-            head.Add(title);
+            var titleLabel = new Label("Debug");
+            titleLabel.AddToClassList("vfx-allsection-title");
+            head.Add(titleLabel);
             _dbgTeaser = new Label();
             _dbgTeaser.AddToClassList("vfx-debug-teaser");
             head.Add(_dbgTeaser);
@@ -572,7 +565,7 @@ namespace VfxControl.EditorTools
             jump.AddToClassList("vfx-allsection-jump");
             head.Add(jump);
             head.tooltip = "Open the Debug tab";
-            head.RegisterCallback<ClickEvent>(e =>
+            head.RegisterCallback<ClickEvent>(_ =>
             {
                 _tab = "debug"; _state.Tab = "debug";
                 PopulateActiveTab();
@@ -586,7 +579,7 @@ namespace VfxControl.EditorTools
         // Flip a collapse key, persist it, and rebuild the body. The single home for the
         // "click a header to expand/collapse" gesture (the All-tab/struct headers add Alt-click
         // bulk logic on top of their own handlers).
-        void ToggleCollapse(string key)
+        private void ToggleCollapse(string key)
         {
             if (!_collapsed.Remove(key)) _collapsed.Add(key);
             _state.SaveCollapsed(_collapsed);
@@ -598,8 +591,8 @@ namespace VfxControl.EditorTools
         // key. `count` < 0 hides the badge; `forceOpen` (search active) forces-open and disables
         // the toggle. Returns the header (so callers can append a ★ pin), the content to fill,
         // and whether it's open (some sections only build content when open).
-        (VisualElement header, VisualElement content, bool open) AddGroupShell(
-            VisualElement host, string key, string title, int count = -1, bool forceOpen = false)
+        private (VisualElement header, VisualElement content, bool open) AddGroupShell(
+            VisualElement host, string key, string heading, int count = -1, bool forceOpen = false)
         {
             bool open = forceOpen || !_collapsed.Contains(key);
 
@@ -608,7 +601,7 @@ namespace VfxControl.EditorTools
             var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
             twirl.AddToClassList("vfx-group-twirl");
             header.Add(twirl);
-            var titleLbl = new Label(title);
+            var titleLbl = new Label(heading);
             titleLbl.AddToClassList("vfx-group-title");
             header.Add(titleLbl);
             if (count >= 0)
@@ -620,7 +613,7 @@ namespace VfxControl.EditorTools
             if (!forceOpen)
             {
                 header.tooltip = "Click to expand/collapse";
-                header.RegisterCallback<ClickEvent>(e => ToggleCollapse(key));
+                header.RegisterCallback<ClickEvent>(_ => ToggleCollapse(key));
             }
             group.Add(header);
 
@@ -631,16 +624,16 @@ namespace VfxControl.EditorTools
             return (header, content, open);
         }
 
-        void AddAllSection(VisualElement body, string title, Action<VisualElement> buildContent)
+        private void AddAllSection(VisualElement body, string heading, Action<VisualElement> buildContent)
         {
-            string key = "all:" + title;
+            string key = "all:" + heading;
             bool open = !_collapsed.Contains(key);
 
             var header = MakeElement("vfx-allsection-head");
             var twirl = new Label(open ? "▾" : "▸") { pickingMode = PickingMode.Ignore };
             twirl.AddToClassList("vfx-allsection-twirl");
             header.Add(twirl);
-            var titleLbl = new Label(title);
+            var titleLbl = new Label(heading);
             titleLbl.AddToClassList("vfx-allsection-title");
             header.Add(titleLbl);
             header.tooltip = "Click to expand/collapse · Alt+click for all nested";
@@ -649,7 +642,7 @@ namespace VfxControl.EditorTools
                 bool collapse = !_collapsed.Contains(key); // the section's new state
                 if (collapse) _collapsed.Add(key); else _collapsed.Remove(key);
                 if (e.altKey) // fold/unfold every group inside this section to match
-                    SetCollapsedAll(AllSectionCollapseKeys(title), collapse);
+                    SetCollapsedAll(AllSectionCollapseKeys(heading), collapse);
                 _state.SaveCollapsed(_collapsed);
                 RebuildBodyOnly();
             });
@@ -663,9 +656,9 @@ namespace VfxControl.EditorTools
 
         // Playback rows built this populate (favorites copy + section copy), kept in sync on edit
         // via each field's `sync` action (they back live props, not SerializedProperties).
-        readonly List<(VisualElement row, PField field, Action sync)> _playbackRows = new List<(VisualElement, PField, Action)>();
+        private readonly List<(VisualElement row, PField field, Action sync)> _playbackRows = new List<(VisualElement, PField, Action)>();
 
-        string EmptyMessage()
+        private string EmptyMessage()
         {
             if (_filter == "mod") return "Nothing edited yet — all properties match the graph defaults.";
             if (_filter == "fav") return "No favorite properties. Hover a row and tap ★ to add one.";
@@ -673,7 +666,7 @@ namespace VfxControl.EditorTools
             return "No properties exposed in this Visual Effect Graph.";
         }
 
-        bool Visible(VfxExposedParam p)
+        private bool Visible(VfxExposedParam p)
         {
             string q = _search.Trim().ToLowerInvariant();
             if (!string.IsNullOrEmpty(q) &&
@@ -687,7 +680,7 @@ namespace VfxControl.EditorTools
             return true;
         }
 
-        Button MakeChip(string id, string label, int count)
+        private Button MakeChip(string id, string label, int count)
         {
             var chip = new Button(() => { _filter = id; _state.Filter = id; RebuildBodyOnly(); });
             chip.AddToClassList("vfx-fchip");
@@ -702,7 +695,7 @@ namespace VfxControl.EditorTools
         // The active tab's section rail: an "All" button plus the tab's declared sections
         // (categories for Properties, Probes/Additional for Renderer, …). Selection is
         // per-tab (CurrentSection / SetSection).
-        VisualElement BuildRail(TabDef def)
+        private VisualElement BuildRail(TabDef def)
         {
             var rail = new ScrollView(ScrollViewMode.Horizontal);
             rail.AddToClassList("vfx-hrail");
@@ -719,7 +712,7 @@ namespace VfxControl.EditorTools
 
         // Make a horizontal ScrollView scroll on a vertical (or horizontal) wheel when its
         // content overflows. Shared by the tab strip and the section rail.
-        static void AttachHScroll(ScrollView sv)
+        private static void AttachHScroll(ScrollView sv)
         {
             sv.RegisterCallback<WheelEvent>(e =>
             {
@@ -732,7 +725,7 @@ namespace VfxControl.EditorTools
             });
         }
 
-        Button MakeRailButton(string id, string label, Color dot, bool isAll)
+        private Button MakeRailButton(string id, string label, Color dot, bool isAll)
         {
             var btn = new Button(() =>
             {
@@ -755,16 +748,15 @@ namespace VfxControl.EditorTools
 
         // A favorite-able setting from any source (property, renderer, …) that knows how to
         // render its own row. Lets the Favorites group mix sources uniformly (the All tab).
-        sealed class Setting
+        private sealed class Setting
         {
-            public string FavKey;
             public Func<VisualElement> BuildRow;
         }
 
         // Prepend a "Favorites" group to a tab body — but only when not already narrowing via the
         // rail section, a chip, or search (those isolate favorites themselves). `includeProps`
         // adds the property favorites (struct-aware); `rendererFavs` adds renderer rows.
-        void AddFavoriteGroup(VisualElement body, bool includeProps, List<Setting> rendererFavs)
+        private void AddFavoriteGroup(VisualElement body, bool includeProps, List<Setting> rendererFavs)
         {
             if (CurrentSection() != "all" || _filter != "all" || !string.IsNullOrEmpty(_search.Trim()))
                 return;
@@ -782,7 +774,7 @@ namespace VfxControl.EditorTools
         // Quick-access "Favorites" group: a collapsible header styled like a category. Property
         // favorites render through the same struct-aware path as categories (so a pinned Box
         // shows its header + Edit-Gizmo); renderer favorites render as rows.
-        VisualElement BuildFavoriteGroup(List<VfxExposedParam> propDisplay, List<Setting> rendererFavs, int count)
+        private VisualElement BuildFavoriteGroup(List<VfxExposedParam> propDisplay, List<Setting> rendererFavs, int count)
         {
             const string key = "Favorites"; // collapse state lives in _collapsed like a category
             bool open = !_collapsed.Contains(key);
@@ -797,14 +789,14 @@ namespace VfxControl.EditorTools
             var star = new Label("★") { pickingMode = PickingMode.Ignore };
             star.AddToClassList("vfx-group-star");
             header.Add(star);
-            var title = new Label("Favorites");
-            title.AddToClassList("vfx-group-title");
-            header.Add(title);
+            var titleLabel = new Label("Favorites");
+            titleLabel.AddToClassList("vfx-group-title");
+            header.Add(titleLabel);
             var countLabel = new Label(count.ToString());
             countLabel.AddToClassList("vfx-group-count");
             header.Add(countLabel);
             header.tooltip = "Click to expand/collapse";
-            header.RegisterCallback<ClickEvent>(e => ToggleCollapse(key));
+            header.RegisterCallback<ClickEvent>(_ => ToggleCollapse(key));
             group.Add(header);
 
             var content = MakeElement("vfx-group-content");
@@ -820,7 +812,7 @@ namespace VfxControl.EditorTools
 
         // ------------------------------------------------------------------ footer
 
-        VisualElement BuildFooter()
+        private VisualElement BuildFooter()
         {
             var footer = MakeElement("vfx-footer");
             _footNote = new Label();
@@ -843,11 +835,10 @@ namespace VfxControl.EditorTools
         }
 
         // The play/scrub timeline window default (the value a freshly-set-up tool uses).
-        const float kDefaultDuration = 10f;
-        bool PlaybackModified() => PlaybackChipCounts().mod > 0;
+        private const float kDefaultDuration = 10f;
 
         // Modified count for the active tab — drives the footer note + Reset button enabled state.
-        int ActiveTabModifiedCount()
+        private int ActiveTabModifiedCount()
         {
             switch (_tab)
             {
@@ -860,7 +851,7 @@ namespace VfxControl.EditorTools
         }
 
         // Reset only the active tab's modified settings (All resets every source).
-        void ResetActiveTab()
+        private void ResetActiveTab()
         {
             switch (_tab)
             {
@@ -872,20 +863,20 @@ namespace VfxControl.EditorTools
             RebuildBodyOnly();
         }
 
-        void ResetAllProperties()
+        private void ResetAllProperties()
         {
             foreach (var p in _params)
                 if (VfxPropertySheet.IsOverridden(_so, p))
                     ResetAll(p);
         }
 
-        void ResetPlayback()
+        private void ResetPlayback()
         {
             foreach (var f in BuildPlaybackFields())
                 if (f.IsModified()) f.Reset();
         }
 
-        void UpdateFooter()
+        private void UpdateFooter()
         {
             if (_footNote == null || _so == null) return;
             int mod = ActiveTabModifiedCount();
@@ -898,24 +889,24 @@ namespace VfxControl.EditorTools
 
         // Repopulate tabs/chips/rail/body for the current state, keeping the chrome (and the
         // focused search field) intact. Used by chips, rail, favorites, reset, collapse, etc.
-        void RebuildBodyOnly() => PopulateActiveTab();
+        private void RebuildBodyOnly() => PopulateActiveTab();
 
         // Favorites are namespaced so properties, renderer fields, and meta can coexist in
         // one set: "prop:<name>", "renderer:<m_Field>", "meta:<id>", "play:<id>".
-        static string FavKeyOf(VfxExposedParam p) => "prop:" + p.Name;
-        bool IsFav(string key) => _favorites.Contains(key);
+        private static string FavKeyOf(VfxExposedParam p) => "prop:" + p.Name;
+        private bool IsFav(string key) => _favorites.Contains(key);
 
-        void ToggleFav(string key)
+        private void ToggleFav(string key)
         {
             if (!_favorites.Remove(key)) _favorites.Add(key);
             _state.SaveFavorites(_favorites);
             RebuildBodyOnly();
         }
 
-        void ToggleFavorite(VfxExposedParam p) => ToggleFav(FavKeyOf(p));
+        private void ToggleFavorite(VfxExposedParam p) => ToggleFav(FavKeyOf(p));
 
         // One-time upgrade of pre-Phase-2 favorites (bare property names) to the "prop:" namespace.
-        void MigrateFavorites()
+        private void MigrateFavorites()
         {
             bool changed = false;
             var migrated = new HashSet<string>();
@@ -930,7 +921,7 @@ namespace VfxControl.EditorTools
 
         // ~30fps clock: advances the scrub bar in real time while playing. At the end of the
         // window it loops (reset the sim) or — if Loop is off — stops on the last frame.
-        void Tick()
+        private void Tick()
         {
             double now = EditorApplication.timeSinceStartup;
             float dt = Mathf.Min((float)(now - _lastTick), 0.1f); // clamp so idle gaps don't jump
@@ -953,7 +944,7 @@ namespace VfxControl.EditorTools
             _readback.Pump(); // keeps the readback globals bound; only requests data when the panel shows
         }
 
-        void UpdateLive()
+        private void UpdateLive()
         {
             if (_effect == null) return;
             if (_liveLabel != null) _liveLabel.text = $"{_effect.aliveParticleCount:N0} live";
@@ -977,31 +968,31 @@ namespace VfxControl.EditorTools
                 _showBoundsToggle.SetValueWithoutNotify(ShowBounds);
         }
 
-        void BuildPlaceholder(VisualElement body, string msg)
+        private void BuildPlaceholder(VisualElement body, string msg)
         {
             var ph = new Label(msg);
             ph.AddToClassList("vfx-placeholder");
             body.Add(ph);
         }
 
-        static VisualElement MakeElement(string cls)
+        private static VisualElement MakeElement(string cls)
         {
             var ve = new VisualElement();
             ve.AddToClassList(cls);
             return ve;
         }
 
-        static Button MakeIconButton(string glyph, string tooltip, Action onClick)
+        private static Button MakeIconButton(string glyph, string tooltip, Action onClick)
         {
             var b = new Button(onClick) { text = glyph, tooltip = tooltip };
             b.AddToClassList("vfx-iconbtn");
             return b;
         }
 
-        static float ToFloat(object o) => o == null ? 0f : Convert.ToSingle(o);
-        static int ToInt(object o) => o == null ? 0 : (int)Convert.ToInt64(o);
+        private static float ToFloat(object o) => o == null ? 0f : Convert.ToSingle(o);
+        private static int ToInt(object o) => o == null ? 0 : (int)Convert.ToInt64(o);
 
-        static Type ResolveObjectType(string realType)
+        private static Type ResolveObjectType(string realType)
         {
             switch (realType)
             {

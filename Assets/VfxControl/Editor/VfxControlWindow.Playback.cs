@@ -10,11 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
-using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.Profiling;
-using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
 using Object = UnityEngine.Object;
@@ -25,15 +21,16 @@ namespace VfxControl.EditorTools
     {
         // configurable timeline/scrub window length (Playback tab); the play clock
         // fills the bar over this many seconds and then loops (or stops, if _loop is off).
-        float _duration = 10f;
-        bool _loop = true;
-        double _lastTick;
+        private float _duration = 10f;
+        private bool _loop = true;
+
+        private double _lastTick;
         // The persistent transport bar (always visible above the tabs). Two rows:
         //   row 1 — the full-width scrub bar + time + live count;
         //   row 2 — the transport buttons (restart · step-back · play/pause · step-forward · loop)
         //           followed by the Rate slider.
         // This is the single home for the transport (the Playback tab does not duplicate it).
-        VisualElement BuildMiniTransport()
+        private VisualElement BuildMiniTransport()
         {
             var wrap = MakeElement("vfx-transport-wrap"); // column: scrub row + controls row
 
@@ -46,7 +43,7 @@ namespace VfxControl.EditorTools
             scrub.Add(_miniFill);
             scrub.RegisterCallback<MouseDownEvent>(e => { scrub.CaptureMouse(); ScrubAt(scrub, e.localMousePosition.x); });
             scrub.RegisterCallback<MouseMoveEvent>(e => { if (scrub.HasMouseCapture()) ScrubAt(scrub, e.localMousePosition.x); });
-            scrub.RegisterCallback<MouseUpEvent>(e => scrub.ReleaseMouse());
+            scrub.RegisterCallback<MouseUpEvent>(_ => scrub.ReleaseMouse());
             top.Add(scrub);
 
             _timeLabel = new Label("0.00 / 0s");
@@ -115,7 +112,7 @@ namespace VfxControl.EditorTools
             return wrap;
         }
 
-        void ScrubAt(VisualElement scrub, float localX)
+        private void ScrubAt(VisualElement scrub, float localX)
         {
             float w = scrub.layout.width;
             if (w <= 0) return;
@@ -125,7 +122,7 @@ namespace VfxControl.EditorTools
         // GPU sim has no random-access seek: pause, Reinit, then simulate forward to the target
         // time. Best-effort and capped (see handoff "Scrubbing caveat"). Used by the scrub bar
         // and the transport's step-back.
-        void SeekTo(float t)
+        private void SeekTo(float t)
         {
             if (_effect == null) return;
             _scrubT = Mathf.Clamp01(t);
@@ -143,7 +140,7 @@ namespace VfxControl.EditorTools
         // props / tool prefs rather than a SerializedProperty: each carries a fav key, modified
         // test, reset, and a control factory whose `sync` re-reads the value into the control
         // (so duplicate copies — favorites group + section row — stay coherent, like Duration did).
-        sealed class PField
+        private sealed class PField
         {
             public string Id, Label, Tooltip;
             public string FavKey => "play:" + Id;
@@ -155,7 +152,7 @@ namespace VfxControl.EditorTools
         // The playback settings, in display order. Rebuilt on demand (cheap — just descriptors);
         // closures capture _effect/_effects/_duration, not specific controls, so this is safe to
         // call for counts even with no target.
-        List<PField> BuildPlaybackFields()
+        private List<PField> BuildPlaybackFields()
         {
             var list = new List<PField>
             {
@@ -227,10 +224,10 @@ namespace VfxControl.EditorTools
         }
 
         // initialEventName is empty by default but behaves as "OnPlay"; normalize for display/compare.
-        static string InitEventOf(VisualEffect ve) => string.IsNullOrEmpty(ve.initialEventName) ? "OnPlay" : ve.initialEventName;
+        private static string InitEventOf(VisualEffect ve) => string.IsNullOrEmpty(ve.initialEventName) ? "OnPlay" : ve.initialEventName;
 
         // Do the selected instances disagree on a value? (drives showMixedValue, like a multi-target SO.)
-        bool EffectsDiffer<T>(Func<VisualEffect, T> get)
+        private bool EffectsDiffer<T>(Func<VisualEffect, T> get)
         {
             if (_effect == null || _effects.Count <= 1) return false;
             var first = get(_effect);
@@ -239,7 +236,7 @@ namespace VfxControl.EditorTools
             return false;
         }
 
-        void BuildPlaybackTab(VisualElement body)
+        private void BuildPlaybackTab(VisualElement body)
         {
             AddFavoriteGroup(body, includeProps: false, PlaybackFavoriteSettings());
             BuildPlaybackContent(body);
@@ -250,7 +247,7 @@ namespace VfxControl.EditorTools
         // tab's Probes/Additional: "Playback options" (the setting rows) and "Send Event" (the
         // event controls). The transport itself is NOT here — it lives once in the persistent top
         // bar (with the scrub).
-        void BuildPlaybackContent(VisualElement body)
+        private void BuildPlaybackContent(VisualElement body)
         {
             string section = CurrentSection();
             bool InSection(string id) => section == "all" || section == id;
@@ -279,37 +276,37 @@ namespace VfxControl.EditorTools
 
         // A collapsible "Playback options" group (styled like the renderer's section groups),
         // containing the visible playback setting rows. Returns the number of rows shown.
-        int AddPlaybackSection(VisualElement host, string id, string title, List<PField> fields, Func<PField, bool> show)
+        private int AddPlaybackSection(VisualElement host, string id, string heading, List<PField> fields, Func<PField, bool> show)
         {
             var visible = fields.Where(show).ToList();
             if (visible.Count == 0) return 0;
 
             bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
-            var (_, content, _) = AddGroupShell(host, "play:" + id, title, visible.Count, forceOpen);
+            var (_, content, _) = AddGroupShell(host, "play:" + id, heading, visible.Count, forceOpen);
             foreach (var f in visible) content.Add(BuildPlaybackRow(f));
             return visible.Count;
         }
 
 
-        bool PlaybackChipOk(PField f) =>
+        private bool PlaybackChipOk(PField f) =>
             _filter == "all" ||
             (_filter == "fav" && IsFav(f.FavKey)) ||
             (_filter == "mod" && f.IsModified());
 
-        List<Setting> PlaybackFavoriteSettings()
+        private List<Setting> PlaybackFavoriteSettings()
         {
             var list = new List<Setting>();
             foreach (var f in BuildPlaybackFields())
                 if (IsFav(f.FavKey))
-                    list.Add(new Setting { FavKey = f.FavKey, BuildRow = () => BuildPlaybackRow(f) });
+                    list.Add(new Setting { BuildRow = () => BuildPlaybackRow(f) });
             if (IsFav(kSendEventFavKey)) // the Send Event section pins as one unit
-                list.Add(new Setting { FavKey = kSendEventFavKey, BuildRow = BuildSendEventFavRow });
+                list.Add(new Setting { BuildRow = BuildSendEventFavRow });
             return list;
         }
 
         // (leaf, fav, mod) counts for the Playback tab's filter chips. The Send Event section
         // counts as one extra leaf (favoritable, never "modified").
-        (int leaf, int fav, int mod) PlaybackChipCounts()
+        private (int leaf, int fav, int mod) PlaybackChipCounts()
         {
             var fields = BuildPlaybackFields();
             int fav = fields.Count(f => IsFav(f.FavKey)) + (IsFav(kSendEventFavKey) ? 1 : 0);
@@ -319,7 +316,7 @@ namespace VfxControl.EditorTools
         // A playback setting row, styled like any property/renderer row (label · control · hover ↺/★).
         // These back live component props / tool prefs (not SerializedProperties), so edits sync the
         // (possibly two) visible copies via RefreshPlaybackRows rather than binding.
-        VisualElement BuildPlaybackRow(PField f)
+        private VisualElement BuildPlaybackRow(PField f)
         {
             var (control, sync) = f.BuildControl();
 
@@ -355,11 +352,11 @@ namespace VfxControl.EditorTools
         // Start Seed is meaningless when Reseed-on-Play is on (the seed is re-randomized each
         // (re)start), so the control greys out to match. Mixed multi-edit → leave it editable
         // (ambiguous, like the category gate treats mixed as enabled).
-        bool SeedLocked() => _effect != null && _effect.resetSeedOnPlay && !EffectsDiffer(ve => ve.resetSeedOnPlay);
+        private bool SeedLocked() => _effect != null && _effect.resetSeedOnPlay && !EffectsDiffer(ve => ve.resetSeedOnPlay);
 
         // Start Seed: an int field (clamped ≥ 0 → uint, like the uint property control) plus an
         // inline Reseed button that randomizes the seed and reinitializes the sim.
-        (VisualElement control, Action sync) BuildStartSeedControl()
+        private (VisualElement control, Action sync) BuildStartSeedControl()
         {
             var wrap = MakeElement("vfx-seed-control");
             var field = new IntegerField { value = _effect != null ? (int)_effect.startSeed : 0 };
@@ -392,7 +389,7 @@ namespace VfxControl.EditorTools
 
         // A transport button: either a built-in editor icon (iconName, optionally mirrored
         // horizontally) or a text glyph.
-        Button MakeTransportButton(string tooltip, string iconName, Action onClick, string glyph = null, bool mirror = false)
+        private Button MakeTransportButton(string tooltip, string iconName, Action onClick, string glyph = null, bool mirror = false)
         {
             var b = new Button(onClick) { tooltip = tooltip };
             b.AddToClassList("vfx-tbtn");
@@ -413,7 +410,7 @@ namespace VfxControl.EditorTools
 
         // Step one frame forward (simulate) or backward (reinit + resimulate — the GPU sim has no
         // backward step; see the scrubbing caveat). Pauses, like the mini-transport step.
-        void StepFrame(int dir)
+        private void StepFrame(int dir)
         {
             if (_effect == null) return;
             const float dt = 1f / 60f;
@@ -433,33 +430,33 @@ namespace VfxControl.EditorTools
 
         // ---- playback property setters (write to every selected instance, undo-tracked) ----
 
-        void SetPlayRate(float v)
+        private void SetPlayRate(float v)
         {
             v = Mathf.Max(0f, v);
             Undo.RecordObjects(_effects.ToArray(), "Set Play Rate");
             foreach (var ve in _effects) if (ve != null) { ve.playRate = v; EditorUtility.SetDirty(ve); }
         }
 
-        void SetStartSeed(uint v)
+        private void SetStartSeed(uint v)
         {
             Undo.RecordObjects(_effects.ToArray(), "Set Start Seed");
             foreach (var ve in _effects) if (ve != null) { ve.startSeed = v; EditorUtility.SetDirty(ve); }
         }
 
-        void SetResetSeedOnPlay(bool v)
+        private void SetResetSeedOnPlay(bool v)
         {
             Undo.RecordObjects(_effects.ToArray(), "Set Reset Seed On Play");
             foreach (var ve in _effects) if (ve != null) { ve.resetSeedOnPlay = v; EditorUtility.SetDirty(ve); }
         }
 
-        void SetInitialEvent(string v)
+        private void SetInitialEvent(string v)
         {
             Undo.RecordObjects(_effects.ToArray(), "Set Initial Event");
             foreach (var ve in _effects) if (ve != null) { ve.initialEventName = v; EditorUtility.SetDirty(ve); }
         }
 
         // Randomize the seed on every instance and reinitialize so it takes effect immediately.
-        void Reseed()
+        private void Reseed()
         {
             Undo.RecordObjects(_effects.ToArray(), "Reseed VFX");
             foreach (var ve in _effects)
@@ -472,7 +469,7 @@ namespace VfxControl.EditorTools
         }
 
         // Keep every visible playback row (favorites copy + section copy) + chrome in sync.
-        void RefreshPlaybackRows()
+        private void RefreshPlaybackRows()
         {
             foreach (var (row, f, sync) in _playbackRows)
             {

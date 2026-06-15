@@ -10,11 +10,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
-using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.Profiling;
-using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
 using Object = UnityEngine.Object;
@@ -24,30 +21,34 @@ namespace VfxControl.EditorTools
     public partial class VfxControlWindow : EditorWindow
     {
         // --- Debug tab live stat refs (rebuilt with the body; refreshed in place by UpdateLive) ---
-        Label _dbgAlive, _dbgAliveCap, _dbgEff, _dbgSystems, _dbgBounds, _dbgState;
-        Label _dbgCpu, _dbgGpu, _dbgAttrMem; // effect CPU/GPU time (ms) + total attribute memory
-        Label _dbgTeaser; // All-tab "Debug" shortcut summary (one label, refreshed live)
-        readonly List<string> _dbgSysNames = new List<string>(); // reused buffer (no per-tick alloc)
+        private Label _dbgAlive, _dbgAliveCap, _dbgEff, _dbgSystems, _dbgBounds, _dbgState;
+        private Label _dbgCpu, _dbgGpu, _dbgAttrMem; // effect CPU/GPU time (ms) + total attribute memory
+        private Label _dbgTeaser; // All-tab "Debug" shortcut summary (one label, refreshed live)
+
+        private readonly List<string> _dbgSysNames = new List<string>(); // reused buffer (no per-tick alloc)
         // Per-system capacity-bar rows (Systems section), refreshed in place; order matches _dbgSysNames.
-        readonly List<(string name, Label num, VisualElement fill, VisualElement row, Label detail)> _dbgSysRows
+        private readonly List<(string name, Label num, VisualElement fill, VisualElement row, Label detail)> _dbgSysRows
             = new List<(string, Label, VisualElement, VisualElement, Label)>();
         // Profiler Recorders keyed by marker name (created+enabled lazily); reset on target change.
-        readonly Dictionary<string, Recorder> _recorders = new Dictionary<string, Recorder>();
+        private readonly Dictionary<string, Recorder> _recorders = new Dictionary<string, Recorder>();
         // Light EMA per marker (nanoseconds) so the µs readouts don't flicker frame-to-frame.
-        readonly Dictionary<string, double> _smoothNs = new Dictionary<string, double>();
-        const double kTimerSmooth = 0.2; // EMA weight on the newest sample (~0.2s settle at 30fps)
+        private readonly Dictionary<string, double> _smoothNs = new Dictionary<string, double>();
+
+        private const double kTimerSmooth = 0.2; // EMA weight on the newest sample (~0.2s settle at 30fps)
         // The effect we've registered for profiling (per-system CPU/GPU markers need this); unregistered
         // on target change / window close. Registered on-demand while Debug timing is on screen.
-        VisualEffect _profilingEffect;
+        private VisualEffect _profilingEffect;
         // Per-system attribute-buffer stride in 32-bit words (Σ bucket sizes); from the graph layout.
         // Computed per body build (static per asset); empty entries → "—" (layout not yet compiled).
-        Dictionary<string, int> _attrWords = new Dictionary<string, int>();
-        Toggle _showBoundsToggle; // the Visualizers "Show Bounds" checkbox (resynced each tick)
+        private Dictionary<string, int> _attrWords = new Dictionary<string, int>();
+
+        private Toggle _showBoundsToggle; // the Visualizers "Show Bounds" checkbox (resynced each tick)
         // Show Bounds is SHARED across all windows (read straight from SessionState, not cached) so a
         // torn-off Debug tab stays in sync with the main window — both the scene draw and the
         // checkbox (UpdateLive resyncs the toggle when another window flips it).
-        const string kShowBoundsKey = "vfxctrl.showBounds";
-        bool ShowBounds
+        private const string kShowBoundsKey = "vfxctrl.showBounds";
+
+        private bool ShowBounds
         {
             get => SessionState.GetBool(kShowBoundsKey, false);
             set => SessionState.SetBool(kShowBoundsKey, value);
@@ -56,7 +57,7 @@ namespace VfxControl.EditorTools
         // Rail-filtered sections (handoff "Tab: Debug"): the live stat grid, per-system capacity
         // bars, and scene visualizers. All values are public runtime API on VisualEffect — no
         // reflection. Live values refresh in place off the ~30fps clock (RefreshDebugStats).
-        void BuildDebugTab(VisualElement body)
+        private void BuildDebugTab(VisualElement body)
         {
             _dbgSysRows.Clear(); // discard refs from the prior body before rebuilding
             if (_effect == null) { BuildPlaceholder(body, "No Visual Effect selected."); return; }
@@ -82,15 +83,15 @@ namespace VfxControl.EditorTools
         }
 
         // A collapsible Debug section group (the shared .vfx-group chrome; collapse key debug:<id>).
-        void AddDebugGroup(VisualElement host, string id, string title, Action<VisualElement> buildContent)
+        private void AddDebugGroup(VisualElement host, string id, string heading, Action<VisualElement> buildContent)
         {
-            var (_, content, open) = AddGroupShell(host, "debug:" + id, title);
+            var (_, content, open) = AddGroupShell(host, "debug:" + id, heading);
             if (open) buildContent(content);
         }
 
         // The 2-column stat grid. Sets the _dbg* label refs (cleared first so a stale refresh from
         // a prior body can't touch detached labels), then fills them with one immediate read.
-        void BuildDebugStatsGrid(VisualElement host)
+        private void BuildDebugStatsGrid(VisualElement host)
         {
             _dbgAlive = _dbgAliveCap = _dbgEff = _dbgSystems = _dbgBounds = _dbgState = null;
             _dbgCpu = _dbgGpu = _dbgAttrMem = null;
@@ -115,7 +116,7 @@ namespace VfxControl.EditorTools
 
         // One stat cell: an uppercase key over a value (+ optional dim unit/suffix label).
         // Returns the value label; the unit label comes back via `unit`.
-        Label MakeStat(VisualElement grid, string key, out Label unit, string tooltip)
+        private Label MakeStat(VisualElement grid, string key, out Label unit, string tooltip)
         {
             var cell = MakeElement("vfx-stat");
             cell.tooltip = tooltip;
@@ -139,7 +140,7 @@ namespace VfxControl.EditorTools
         // colour follows the VFX efficiency convention (red under-used → green well-utilised). Rows
         // are cached in _dbgSysRows and refreshed in place; systems are stable until the asset
         // recompiles (→ a full Rebuild), so the row set is built once here.
-        void BuildDebugSystems(VisualElement host)
+        private void BuildDebugSystems(VisualElement host)
         {
             _dbgSysRows.Clear();
             _effect.GetParticleSystemNames(_dbgSysNames);
@@ -188,7 +189,7 @@ namespace VfxControl.EditorTools
 
         // Collapsible per-system attribute layout: name · type · per-particle bytes, in buffer order,
         // with a header summarising the count and per-particle stride (matches the system's "mem"/cap).
-        static VisualElement BuildAttrLayoutFoldout(List<VfxGraphReflection.VfxAttrField> fields)
+        private static VisualElement BuildAttrLayoutFoldout(List<VfxGraphReflection.VfxAttrField> fields)
         {
             int words = 0;
             foreach (var f in fields) words += f.Words;
@@ -210,7 +211,7 @@ namespace VfxControl.EditorTools
         // graph slots (mirrors the VFX profiler). Static per asset, so no live refresh. Rows are
         // name · resolution · size (public Profiler.GetRuntimeMemorySizeLong), biggest first, with a
         // total; clicking a row pings the texture asset.
-        void BuildDebugTextures(VisualElement host)
+        private void BuildDebugTextures(VisualElement host)
         {
             var textures = VfxGraphReflection.GetTextureUsage(_effect.visualEffectAsset);
             if (textures.Count == 0)
@@ -237,7 +238,7 @@ namespace VfxControl.EditorTools
                 var size = new Label(EditorUtility.FormatBytes(bytes));
                 size.AddToClassList("vfx-tex-size");
                 row.Add(name); row.Add(res); row.Add(size);
-                row.RegisterCallback<ClickEvent>(e => EditorGUIUtility.PingObject(tex));
+                row.RegisterCallback<ClickEvent>(_ => EditorGUIUtility.PingObject(tex));
                 list.Add(row);
             }
             host.Add(list);
@@ -251,7 +252,7 @@ namespace VfxControl.EditorTools
             host.Add(totalRow);
         }
 
-        static string TextureResolution(Texture t)
+        private static string TextureResolution(Texture t)
         {
             switch (t)
             {
@@ -264,7 +265,7 @@ namespace VfxControl.EditorTools
         // Visualizers: scene-view debug draws. "Show Bounds" draws the world-space render bounds
         // (the only one reachable via public API — spawn-icons/wireframe/motion-vectors map to VFX
         // debug visualizers that are internal, so they're omitted rather than faked).
-        void BuildDebugVisualizers(VisualElement host)
+        private void BuildDebugVisualizers(VisualElement host)
         {
             var row = MakeElement("vfx-toggle-row");
             var toggle = new Toggle { value = ShowBounds };
@@ -298,14 +299,14 @@ namespace VfxControl.EditorTools
         // VFX efficiency convention (VFXAnchoredProfilerUI.ComputeEfficiencyColor): how well the
         // allocated capacity is used — under ~50% reads as over-allocated (hot/red), ~90%+ as
         // well-utilised (cold/green).
-        static Color EfficiencyColor(float efficiency) =>
+        private static Color EfficiencyColor(float efficiency) =>
             efficiency < 0.51f ? VfxPropertyLayout.Hex("#ff2e2e") :
             efficiency < 0.91f ? VfxPropertyLayout.Hex("#e3a98b") :
                                  VfxPropertyLayout.Hex("#00ff47");
 
         // Adaptive time format: ms for ≥1 ms, else microseconds (VFX per-system costs are usually a
         // few µs, which "0.00 ms" can't show). "—" for unavailable (NaN).
-        static string FmtMs(double ms)
+        private static string FmtMs(double ms)
         {
             if (double.IsNaN(ms)) return "—";
             if (ms >= 1.0) return $"{ms:0.00} ms";
@@ -316,7 +317,7 @@ namespace VfxControl.EditorTools
         // Live refresh, driven by the ~30fps clock in UpdateLive. Each consumer (stat grid, All-tab
         // teaser, per-system bars) is guarded on its widgets being attached, so this no-ops for
         // whichever aren't the current body.
-        void RefreshDebugStats()
+        private void RefreshDebugStats()
         {
             if (_effect == null) return;
             bool gridLive = _dbgAlive?.panel != null;     // Debug tab stat grid is the current body
@@ -388,7 +389,7 @@ namespace VfxControl.EditorTools
 
         // Update one capacity-bar row: alive/capacity numbers, fill (width + efficiency colour),
         // a dimmed "sleeping" treatment, and the per-system detail line (CPU/GPU ms + attr memory).
-        static void UpdateSysRow((string name, Label num, VisualElement fill, VisualElement row, Label detail) r,
+        private static void UpdateSysRow((string name, Label num, VisualElement fill, VisualElement row, Label detail) r,
                                  uint alive, uint capacity, bool sleeping, double cpuMs, double gpuMs, long attrBytes)
         {
             r.row.EnableInClassList("vfx-sys--sleeping", sleeping);
@@ -416,7 +417,7 @@ namespace VfxControl.EditorTools
         // Register the current effect for profiling (idempotent; re-registers if something else
         // unregistered it — self-heals across multiple Debug windows). Switches registration when
         // the target changes.
-        void EnsureProfiling()
+        private void EnsureProfiling()
         {
             if (_effect == null) return;
             if (_profilingEffect == _effect && VfxGraphReflection.IsRegisteredForProfiling(_effect)) return;
@@ -426,7 +427,7 @@ namespace VfxControl.EditorTools
             _profilingEffect = _effect;
         }
 
-        void StopProfiling()
+        private void StopProfiling()
         {
             if (_profilingEffect != null)
             {
@@ -437,7 +438,7 @@ namespace VfxControl.EditorTools
 
         // ---- profiler Recorder helpers (CPU/GPU timing) ----
         // Recorders are created+enabled lazily, cached by marker name, and dropped on target change.
-        Recorder GetRecorder(string marker)
+        private Recorder GetRecorder(string marker)
         {
             if (string.IsNullOrEmpty(marker)) return null;
             if (!_recorders.TryGetValue(marker, out var r))
@@ -450,7 +451,7 @@ namespace VfxControl.EditorTools
         }
 
         // Milliseconds from a marker's Recorder, lightly smoothed (NaN when unavailable).
-        double MarkerMs(string marker, bool gpu)
+        private double MarkerMs(string marker, bool gpu)
         {
             var r = GetRecorder(marker);
             if (r == null) return double.NaN;
@@ -459,7 +460,7 @@ namespace VfxControl.EditorTools
         }
 
         // Exponential moving average of a marker's nanoseconds (keyed by marker name).
-        double Smoothed(string marker, long rawNs)
+        private double Smoothed(string marker, long rawNs)
         {
             double v = _smoothNs.TryGetValue(marker, out var prev)
                 ? prev + (rawNs - prev) * kTimerSmooth
@@ -470,7 +471,7 @@ namespace VfxControl.EditorTools
 
         // Sum the GPU time of a system's tasks (marker probed by index until one comes back empty).
         // NaN when no task markers resolve (reflection unavailable).
-        double SumGpuMs(string system)
+        private double SumGpuMs(string system)
         {
             double sum = 0; bool any = false;
             for (int t = 0; t < 32; t++) // guard bound; real systems have a handful of tasks
@@ -487,7 +488,7 @@ namespace VfxControl.EditorTools
         // per-system GetComputedBounds is internal to the VFX editor assembly, so we use the
         // renderer's AABB — which is what's actually culled/drawn. Returns false (→ "—") with no
         // renderer or a degenerate (empty) box.
-        bool TryGetEffectBounds(out Vector3 size)
+        private bool TryGetEffectBounds(out Vector3 size)
         {
             size = Vector3.zero;
             var r = _effect.GetComponent<Renderer>();
@@ -498,7 +499,7 @@ namespace VfxControl.EditorTools
 
         // "Show Bounds" visualizer: a world-space wire cube of the VFXRenderer's AABB. Cosmetic
         // Handles draws must be gated on Repaint or they corrupt GL state (see the gizmo notes).
-        void DrawBoundsVisualizer()
+        private void DrawBoundsVisualizer()
         {
             if (Event.current.type != EventType.Repaint) return;
             var r = _effect.GetComponent<Renderer>();

@@ -10,11 +10,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.Profiling;
-using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
 using Object = UnityEngine.Object;
@@ -25,12 +22,12 @@ namespace VfxControl.EditorTools
     {
         // Favorite key for the whole Send Event section (it's an action surface, not a per-row
         // setting, so it pins as one unit into the Favorites group).
-        const string kSendEventFavKey = "play:sendevent";
+        private const string kSendEventFavKey = "play:sendevent";
 
         // "Send Event": a collapsible section group (same .vfx-group chrome as "Playback options"
         // / the renderer sections), containing the quick-chips — OnPlay/OnStop + every custom Event
         // block in the graph. Its header carries a ★ pin (favorite) like a row. Returns 1.
-        int AddSendEventSection(VisualElement host)
+        private int AddSendEventSection(VisualElement host)
         {
             var (header, content, _) = AddGroupShell(host, "play:events", "Send Event");
             // ★ pin: toggles the section's favorite (StopPropagation so it doesn't also collapse).
@@ -55,13 +52,13 @@ namespace VfxControl.EditorTools
         // VFXEventAttribute). Editing a value mutates the model in place; reorder mutates the list
         // order in place (cosmetic — the payload is keyed by name); add/remove/type/name-swap
         // rebuild the body.
-        const float kPayloadRowHeight = 24f;
-        const float kPayloadHeaderHeight = 24f;
-        const float kPayloadFooterHeight = 26f;
-        const float kPayloadChrome = 8f;    // border/padding slack so the last row isn't clipped
-        const int kPayloadMaxRows = 12;     // cap the visible list height
+        private const float kPayloadRowHeight = 24f;
+        private const float kPayloadHeaderHeight = 24f;
+        private const float kPayloadFooterHeight = 26f;
+        private const float kPayloadChrome = 8f;    // border/padding slack so the last row isn't clipped
+        private const int kPayloadMaxRows = 12;     // cap the visible list height
 
-        VisualElement BuildEventPayloadEditor()
+        private VisualElement BuildEventPayloadEditor()
         {
             var box = MakeElement("vfx-payload");
 
@@ -134,7 +131,7 @@ namespace VfxControl.EditorTools
         // One payload-attribute row, with aligned columns: name · type · value · ✕. Built-in:
         // name is a dropdown of standard attributes (swap re-types the row); type is a grayed-out,
         // disabled dropdown (fixed by the attribute). Custom: editable name + a live type dropdown.
-        VisualElement BuildPayloadRow(EventAttr a)
+        private VisualElement BuildPayloadRow(EventAttr a)
         {
             var row = MakeElement("vfx-payload-row");
             if (a == null) return row; // defensive: a manually-grown list can hold null entries
@@ -180,7 +177,7 @@ namespace VfxControl.EditorTools
         }
 
         // Short type labels (used in the type dropdowns + the add menu) to save horizontal space.
-        static string AttrTypeLabel(EventAttrType t)
+        private static string AttrTypeLabel(EventAttrType t)
         {
             switch (t)
             {
@@ -195,7 +192,7 @@ namespace VfxControl.EditorTools
         }
 
         // Custom-attribute type choices, in dropdown order (Float, V2, V3, V4, Bool, Uint, Int).
-        static readonly List<EventAttrType> s_AttrTypes = new List<EventAttrType>
+        private static readonly List<EventAttrType> s_AttrTypes = new List<EventAttrType>
         {
             EventAttrType.Float, EventAttrType.Vector2, EventAttrType.Vector3, EventAttrType.Vector4,
             EventAttrType.Bool, EventAttrType.Uint, EventAttrType.Int,
@@ -204,7 +201,7 @@ namespace VfxControl.EditorTools
         // Type control = the VFX-Graph blackboard **type icon** (Float/Vector2-4/Boolean/Integer).
         // Editable (custom) → a button that opens a type menu; non-editable (built-in) → a grayed,
         // disabled icon holder. Replaces the text PopupField.
-        VisualElement MakeAttrTypeControl(EventAttr a, bool editable)
+        private VisualElement MakeAttrTypeControl(EventAttr a, bool editable)
         {
             var icon = new Image { image = AttrTypeIcon(a.Type), scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
             icon.AddToClassList("vfx-payload-typeicon");
@@ -226,7 +223,7 @@ namespace VfxControl.EditorTools
         }
 
         // Menu of the custom attribute types (icon shows on the row; the menu lists names).
-        void ShowTypeMenu(EventAttr a)
+        private void ShowTypeMenu(EventAttr a)
         {
             var menu = new GenericMenu();
             foreach (var t in s_AttrTypes)
@@ -243,7 +240,7 @@ namespace VfxControl.EditorTools
         }
 
         // The blackboard type icon for a payload type (Uint/Int share "Integer"; Bool → "Boolean").
-        static Texture2D AttrTypeIcon(EventAttrType t)
+        private static Texture2D AttrTypeIcon(EventAttrType t)
         {
             string name;
             switch (t)
@@ -264,7 +261,7 @@ namespace VfxControl.EditorTools
         }
 
         // The value editor for one attribute, bound to a.Value (in-place; no rebuild on edit).
-        VisualElement BuildAttrValueControl(EventAttr a)
+        private VisualElement BuildAttrValueControl(EventAttr a)
         {
             // The standard `color` attribute is a Vector3 (RGB) but reads best as a color swatch;
             // edit it with a ColorField while keeping the value a Vector3 (so it sends via SetVector3).
@@ -326,7 +323,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        static object DefaultAttrValue(EventAttrType t)
+        private static object DefaultAttrValue(EventAttrType t)
         {
             switch (t)
             {
@@ -341,13 +338,13 @@ namespace VfxControl.EditorTools
         }
 
         // Default value for a standard attribute (color starts white, not black).
-        static object StdDefault(StdAttr s) => s.Name == "color" ? (object)Vector3.one : DefaultAttrValue(s.Type);
+        private static object StdDefault(StdAttr s) => s.Name == "color" ? (object)Vector3.one : DefaultAttrValue(s.Type);
 
         // Populate a menu with every standard attribute under `root`, grouped by a grayed section
         // header (`AddDisabledItem`) + `AddSeparator` between groups, alphabetical within each
         // section. `checkedName` shows the radio dot on the current pick. Shared by the "+ Attribute"
         // add menu and the built-in row's name-swap menu.
-        void AddStdAttrMenuItems(GenericMenu menu, string root, string checkedName, Action<StdAttr> onPick)
+        private void AddStdAttrMenuItems(GenericMenu menu, string root, string checkedName, Action<StdAttr> onPick)
         {
             bool firstSection = true;
             foreach (var section in s_StdSections)
@@ -366,7 +363,7 @@ namespace VfxControl.EditorTools
 
         // The "+ Attribute" dropdown: two entries — "Built-in Attribute" (the grouped standard list)
         // and "Custom Attribute" (a free name/type).
-        void ShowAddAttributeMenu()
+        private void ShowAddAttributeMenu()
         {
             var menu = new GenericMenu();
             AddStdAttrMenuItems(menu, "Built-in Attribute/", null, std =>
@@ -413,7 +410,7 @@ namespace VfxControl.EditorTools
         // A name field rendered as a dropdown button (left-aligned label + ▾ caret) — shared by the
         // built-in and graph-custom rows (their name is constrained to a known list, not free text).
         // `warn` (stale graph-custom) prefixes a ⚠ and tints the label; the tooltip carries the reason.
-        Button MakeNameDropdown(string current, string tooltip, Action onClick, bool warn = false)
+        private Button MakeNameDropdown(string current, string tooltip, Action onClick, bool warn = false)
         {
             var btn = new Button(onClick) { tooltip = tooltip };
             btn.AddToClassList("vfx-payload-name");
@@ -430,7 +427,7 @@ namespace VfxControl.EditorTools
 
         // The built-in row's name swap menu — the same grouped standard list (headers + separators),
         // top-level (no "Built-in Attribute/" prefix), with the current attribute checked.
-        void ShowBuiltinNameMenu(EventAttr a)
+        private void ShowBuiltinNameMenu(EventAttr a)
         {
             var menu = new GenericMenu();
             AddStdAttrMenuItems(menu, "", a.Name, std =>
@@ -445,7 +442,7 @@ namespace VfxControl.EditorTools
 
         // The graph-custom row's name swap menu — the graph's blackboard custom attributes, with the
         // current one checked; swapping re-types the row to that attribute's declared type.
-        void ShowGraphCustomNameMenu(EventAttr a)
+        private void ShowGraphCustomNameMenu(EventAttr a)
         {
             var menu = new GenericMenu();
             var customs = VfxGraphReflection.GetCustomAttributes(_effect != null ? _effect.visualEffectAsset : null)
@@ -468,7 +465,7 @@ namespace VfxControl.EditorTools
         // The left-aligned, wrapping row of event chips: the built-in OnPlay/OnStop plus every
         // custom Event block (VFXBasicEvent.eventName) declared in the graph (via VfxGraphReflection).
         // Clicking a chip SendEvents it to every selected instance.
-        VisualElement BuildEventChips()
+        private VisualElement BuildEventChips()
         {
             var chips = MakeElement("vfx-sendevent-chips");
             foreach (var n in EventChipNames())
@@ -488,7 +485,7 @@ namespace VfxControl.EditorTools
         }
 
         // The Send Event section as a Favorites-group entry: a labelled chips row.
-        VisualElement BuildSendEventFavRow()
+        private VisualElement BuildSendEventFavRow()
         {
             var row = MakeElement("vfx-row");
             var labelCol = MakeElement("vfx-label-col");
@@ -505,7 +502,7 @@ namespace VfxControl.EditorTools
 
         // The Send-Event chips: the built-in OnPlay/OnStop, then every custom Event block declared
         // in the graph (VFXBasicEvent.eventName), distinct and in graph order.
-        List<string> EventChipNames()
+        private List<string> EventChipNames()
         {
             var names = new List<string> { VisualEffectAsset.PlayEventName, VisualEffectAsset.StopEventName };
             var asset = _effect != null ? _effect.visualEffectAsset : null;
@@ -517,7 +514,7 @@ namespace VfxControl.EditorTools
         // Send an event to every selected instance, attaching the payload attributes (if any) via
         // a per-instance VFXEventAttribute. OnPlay/OnStop route through Play()/Stop() like the
         // package's Event Tester so the attributes reach the right system.
-        void SendEventToAll(string eventName)
+        private void SendEventToAll(string eventName)
         {
             if (string.IsNullOrEmpty(eventName)) return;
             foreach (var ve in _effects)
@@ -554,11 +551,14 @@ namespace VfxControl.EditorTools
         // ---- payload persistence (SessionState: survives domain reload, cleared on editor restart) ----
 
         // EventAttr.Value is `object`, so serialize it into typed buckets (vec / boolVal / intVal).
-        [Serializable] struct EventAttrDTO { public string name; public int type; public bool builtIn; public bool graphCustom; public Vector4 vec; public bool boolVal; public int intVal; }
-        [Serializable] class AssetPayloadDTO { public string guid; public List<EventAttrDTO> items = new List<EventAttrDTO>(); }
-        [Serializable] class PayloadStoreDTO { public List<AssetPayloadDTO> assets = new List<AssetPayloadDTO>(); }
+        [Serializable]
+        private struct EventAttrDTO { public string name; public int type; public bool builtIn; public bool graphCustom; public Vector4 vec; public bool boolVal; public int intVal; }
+        [Serializable]
+        private class AssetPayloadDTO { public string guid; public List<EventAttrDTO> items = new List<EventAttrDTO>(); }
+        [Serializable]
+        private class PayloadStoreDTO { public List<AssetPayloadDTO> assets = new List<AssetPayloadDTO>(); }
 
-        static EventAttrDTO ToDTO(EventAttr a)
+        private static EventAttrDTO ToDTO(EventAttr a)
         {
             var d = new EventAttrDTO { name = a.Name, type = (int)a.Type, builtIn = a.BuiltIn, graphCustom = a.GraphCustom };
             switch (a.Type)
@@ -574,7 +574,7 @@ namespace VfxControl.EditorTools
             return d;
         }
 
-        static EventAttr FromDTO(EventAttrDTO d)
+        private static EventAttr FromDTO(EventAttrDTO d)
         {
             var t = (EventAttrType)Mathf.Clamp(d.type, 0, (int)EventAttrType.Int);
             object val;
@@ -591,7 +591,7 @@ namespace VfxControl.EditorTools
             return new EventAttr { Name = d.name, Type = t, Value = val, BuiltIn = d.builtIn, GraphCustom = d.graphCustom };
         }
 
-        void SavePayloads()
+        private void SavePayloads()
         {
             var store = new PayloadStoreDTO();
             foreach (var kv in _payloadByAsset)
@@ -604,7 +604,7 @@ namespace VfxControl.EditorTools
             SessionState.SetString(kPayloadSessionKey, store.assets.Count > 0 ? JsonUtility.ToJson(store) : "");
         }
 
-        void LoadPayloads()
+        private void LoadPayloads()
         {
             _payloadByAsset.Clear();
             var json = SessionState.GetString(kPayloadSessionKey, "");
@@ -625,29 +625,31 @@ namespace VfxControl.EditorTools
         // event via VFXEventAttribute (modelled on the package's VFX Event Tester overlay). Lives
         // for the window session; survives body rebuilds (not a per-populate list).
         // Enum order = the Custom type dropdown order (Float, V2, V3, V4, Bool, Uint, Int).
-        enum EventAttrType { Float, Vector2, Vector3, Vector4, Bool, Uint, Int }
+        private enum EventAttrType { Float, Vector2, Vector3, Vector4, Bool, Uint, Int }
         // BuiltIn = a standard attribute (name picked from a fixed dropdown, type fixed); otherwise
         // a custom attribute (name + type freely edited).
         // BuiltIn = standard attribute (name picked from the standard list, type fixed).
         // GraphCustom = a custom attribute declared in the graph's blackboard (name picked from the
         // graph's list, type fixed). Neither → a free custom attribute (name + type freely edited).
-        sealed class EventAttr { public string Name; public EventAttrType Type; public object Value; public bool BuiltIn; public bool GraphCustom; }
+        private sealed class EventAttr { public string Name; public EventAttrType Type; public object Value; public bool BuiltIn; public bool GraphCustom; }
         // Payload is scoped per VFX asset: _payloadByAsset[guid] holds each asset's rows; _eventPayload
         // points at the active asset's list (swapped in SetTarget). Persisted in SessionState (survives
         // domain reload, cleared on editor restart) via Save/LoadPayloads.
-        readonly Dictionary<string, List<EventAttr>> _payloadByAsset = new Dictionary<string, List<EventAttr>>();
-        List<EventAttr> _eventPayload = new List<EventAttr>();
-        const string kPayloadSessionKey = "vfxctrl.payloads";
+        private readonly Dictionary<string, List<EventAttr>> _payloadByAsset = new Dictionary<string, List<EventAttr>>();
+        private List<EventAttr> _eventPayload = new List<EventAttr>();
+
+        private const string kPayloadSessionKey = "vfxctrl.payloads";
         // The graph's current blackboard custom attributes (name → type), refreshed each time the
         // payload editor builds; used to flag stale GraphCustom rows (renamed/retyped/deleted).
-        readonly Dictionary<string, EventAttrType> _graphCustomLookup = new Dictionary<string, EventAttrType>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, EventAttrType> _graphCustomLookup = new Dictionary<string, EventAttrType>(StringComparer.OrdinalIgnoreCase);
 
         // The standard attributes offered for built-in payload entries — name, type, and section,
         // restricted to the three settable sections (Basic/Advanced Simulation, Rendering; the
         // System/Collision/Strip categories are read-only outputs). Types from VFXAttributesManager;
         // grouping/ordering from the manual's Reference-Attributes page.
-        struct StdAttr { public string Name; public EventAttrType Type; public string Section; }
-        static readonly StdAttr[] s_StdAttrs =
+        private struct StdAttr { public string Name; public EventAttrType Type; public string Section; }
+
+        private static readonly StdAttr[] s_StdAttrs =
         {
             // Basic Simulation
             new StdAttr { Name = "age",            Type = EventAttrType.Float,   Section = "Basic Simulation" },
@@ -673,6 +675,7 @@ namespace VfxControl.EditorTools
             new StdAttr { Name = "size",           Type = EventAttrType.Float,   Section = "Rendering" },
             new StdAttr { Name = "texIndex",       Type = EventAttrType.Float,   Section = "Rendering" },
         };
-        static readonly string[] s_StdSections = { "Basic Simulation", "Advanced Simulation", "Rendering" };
+
+        private static readonly string[] s_StdSections = { "Basic Simulation", "Advanced Simulation", "Rendering" };
     }
 }

@@ -10,10 +10,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.VFX;
@@ -35,11 +33,11 @@ namespace VfxControl.EditorTools
         // APIs (so they stay correct under HDRP and URP).
 
         // Rows built this populate, so a value/undo change can re-evaluate the modified marker.
-        List<(VisualElement row, RField field)> _rendererRows;
+        private List<(VisualElement row, RField field)> _rendererRows;
         // One renderer setting: rail section, label, favorite key, availability (SRP /
         // current-value gates), modified-vs-default test, reset, and a UIToolkit control
         // factory. Built fresh each populate so the closures capture the live SerializedObject.
-        sealed class RField
+        private sealed class RField
         {
             public string Label;
             public string Section;     // "probes" | "additional"
@@ -53,14 +51,15 @@ namespace VfxControl.EditorTools
         // Field defaults = the values on a freshly-created VFX component. Snapshotted once per
         // domain from a throwaway hidden GameObject, so "modified" means "differs from a new
         // component" exactly as the user expects.
-        struct RendererDefaults
+        private struct RendererDefaults
         {
             public int reflectionProbeUsage, lightProbeUsage, rendererPriority, sortingOrder, sortingLayerID;
             public uint renderingLayerMask;
         }
-        static RendererDefaults? s_rendererDefaults;
 
-        RendererDefaults GetRendererDefaults()
+        private static RendererDefaults? s_rendererDefaults;
+
+        private RendererDefaults GetRendererDefaults()
         {
             if (s_rendererDefaults.HasValue) return s_rendererDefaults.Value;
             var d = new RendererDefaults();
@@ -84,16 +83,16 @@ namespace VfxControl.EditorTools
             return d;
         }
 
-        VFXRenderer[] GetRenderers() => _effects
+        private VFXRenderer[] GetRenderers() => _effects
             .Where(ve => ve != null)
             .Select(ve => ve.GetComponent<VFXRenderer>())
             .Where(r => r != null)
             .ToArray();
 
-        static bool RendererPropModified(SerializedProperty p, int def) =>
+        private static bool RendererPropModified(SerializedProperty p, int def) =>
             p != null && (p.hasMultipleDifferentValues || p.intValue != def);
 
-        void BuildRendererTab(VisualElement body)
+        private void BuildRendererTab(VisualElement body)
         {
             var renderers = GetRenderers();
             if (renderers.Length == 0)
@@ -105,7 +104,7 @@ namespace VfxControl.EditorTools
             // One SerializedObject over every selected renderer (writes apply to all); it lives
             // for the lifetime of the rows that bind to it (a fresh one each populate).
             var so = new SerializedObject(renderers.Cast<Object>().ToArray());
-            var fields = BuildRendererFields(so, renderers, GetRendererDefaults());
+            var fields = BuildRendererFields(so, GetRendererDefaults());
             _rendererRows = new List<(VisualElement, RField)>();
             AddFavoriteGroup(body, includeProps: false, RendererFavoriteSettings(so, fields)); // favorited renderer rows share `so`
             body.Add(BuildRendererSections(so, fields));
@@ -114,7 +113,7 @@ namespace VfxControl.EditorTools
         // The Probes/Additional section groups for a given renderer SO+fields, as a host element
         // (so the All tab can share one SO between the pinned group and these sections). Caller
         // resets _rendererRows first; rows accumulate into it for live marker refresh.
-        VisualElement BuildRendererSections(SerializedObject so, List<RField> fields)
+        private VisualElement BuildRendererSections(SerializedObject so, List<RField> fields)
         {
             string section = CurrentSection();
             bool InSection(string id) => section == "all" || section == id;
@@ -145,32 +144,32 @@ namespace VfxControl.EditorTools
         }
 
         // Favorited (and available) renderer fields as Settings, sharing the caller's SO.
-        List<Setting> RendererFavoriteSettings(SerializedObject so, List<RField> fields)
+        private List<Setting> RendererFavoriteSettings(SerializedObject so, List<RField> fields)
         {
             var list = new List<Setting>();
             if (fields == null) return list;
             foreach (var f in fields)
                 if (f.Available && IsFav(f.FavKey))
-                    list.Add(new Setting { FavKey = f.FavKey, BuildRow = () => BuildRendererRow(f, so) });
+                    list.Add(new Setting { BuildRow = () => BuildRendererRow(f, so) });
             return list;
         }
 
         // A collapsible section group (Probes / Additional Settings) styled like a category
         // group, containing the visible renderer rows. Returns the number of rows shown.
-        int AddRendererSection(VisualElement host, SerializedObject so, string id, string title, List<RField> fields, Func<RField, bool> show)
+        private int AddRendererSection(VisualElement host, SerializedObject so, string id, string heading, List<RField> fields, Func<RField, bool> show)
         {
             var visible = fields.Where(f => f.Section == id && show(f)).ToList();
             if (visible.Count == 0) return 0;
 
             bool forceOpen = !string.IsNullOrEmpty(_search.Trim());
-            var (_, content, _) = AddGroupShell(host, "render:" + id, title, visible.Count, forceOpen);
+            var (_, content, _) = AddGroupShell(host, "render:" + id, heading, visible.Count, forceOpen);
             foreach (var f in visible) content.Add(BuildRendererRow(f, so));
             return visible.Count;
         }
 
         // A renderer setting as a property-style row: label column, control, hover ↺/★ tools,
         // modified marker. Reset/pin rebuild the body (re-reading the unbound mask/sorting fields).
-        VisualElement BuildRendererRow(RField f, SerializedObject so)
+        private VisualElement BuildRendererRow(RField f, SerializedObject so)
         {
             var row = MakeElement("vfx-row");
             row.EnableInClassList("vfx-row--modified", f.IsModified());
@@ -208,7 +207,7 @@ namespace VfxControl.EditorTools
         }
 
         // Re-evaluate modified markers + chrome counts after a renderer value/undo change.
-        void RefreshRendererState()
+        private void RefreshRendererState()
         {
             if (_rendererRows != null)
                 foreach (var (row, f) in _rendererRows)
@@ -219,11 +218,11 @@ namespace VfxControl.EditorTools
 
         // Rebuild the active tab body on the next tick (used when a value change toggles which
         // other rows are available, e.g. probe usage → Anchor/Proxy visibility).
-        void DeferRebuildBody() => rootVisualElement.schedule.Execute(RebuildBodyOnly);
+        private void DeferRebuildBody() => rootVisualElement.schedule.Execute(RebuildBodyOnly);
 
         // EnumField over an int-backed serialized property (m_*ProbeUsage). Manual write
         // (intValue + Apply) because BindProperty(EnumField) doesn't persist an int property.
-        VisualElement MakeRendererEnum<T>(SerializedProperty prop, SerializedObject so, bool rebuildOnChange = false)
+        private VisualElement MakeRendererEnum<T>(SerializedProperty prop, SerializedObject so, bool rebuildOnChange = false)
             where T : struct, Enum
         {
             var field = new EnumField((Enum)Enum.ToObject(typeof(T), prop.intValue));
@@ -243,7 +242,7 @@ namespace VfxControl.EditorTools
         // Written through the serialized property (not the renderer's C# setter) so it shares
         // the one ApplyModifiedProperties with the other fields — mixing direct writes with an
         // open SerializedObject lets Apply clobber them (caused "Reset tab" to need two clicks).
-        VisualElement MakeRenderingLayerMaskField(SerializedObject so)
+        private VisualElement MakeRenderingLayerMaskField(SerializedObject so)
         {
             var names = RenderingLayerMask.GetDefinedRenderingLayerNames();
             var values = RenderingLayerMask.GetDefinedRenderingLayerValues();
@@ -269,9 +268,9 @@ namespace VfxControl.EditorTools
             return field;
         }
 
-        const string kAddSortingLayer = "Add Sorting Layer…";
+        private const string kAddSortingLayer = "Add Sorting Layer…";
 
-        VisualElement MakeSortingLayerPopup(SerializedProperty layerIdProp, SerializedObject so)
+        private VisualElement MakeSortingLayerPopup(SerializedProperty layerIdProp, SerializedObject so)
         {
             var layers = SortingLayer.layers;
             var names = layers.Select(l => l.name).ToList();
@@ -302,7 +301,7 @@ namespace VfxControl.EditorTools
 
         // The renderer settings as RField descriptors. Availability mirrors the stock VFX
         // inspector's SRP/usage gates; modified/reset compare against the fresh-create defaults.
-        List<RField> BuildRendererFields(SerializedObject so, VFXRenderer[] renderers, RendererDefaults d)
+        private List<RField> BuildRendererFields(SerializedObject so, RendererDefaults d)
         {
             var reflectionProbeUsage = so.FindProperty("m_ReflectionProbeUsage");
             var lightProbeUsage = so.FindProperty("m_LightProbeUsage");
@@ -412,19 +411,19 @@ namespace VfxControl.EditorTools
         }
 
         // Does an RField pass the active filter chip? (mirrors Visible's fav/mod logic)
-        bool ChipOk(RField f) =>
+        private bool ChipOk(RField f) =>
             _filter == "all" ||
             (_filter == "fav" && IsFav(f.FavKey)) ||
             (_filter == "mod" && f.IsModified());
 
         // (leaf, fav, mod) counts for the renderer tab's filter chips.
-        (int leaf, int fav, int mod) RendererChipCounts()
+        private (int leaf, int fav, int mod) RendererChipCounts()
         {
             var renderers = GetRenderers();
             if (renderers.Length == 0) return (0, 0, 0);
             var so = new SerializedObject(renderers.Cast<Object>().ToArray());
             so.Update();
-            var fields = BuildRendererFields(so, renderers, GetRendererDefaults());
+            var fields = BuildRendererFields(so, GetRendererDefaults());
             int leaf = fields.Count(f => f.Available);
             int fav = fields.Count(f => f.Available && IsFav(f.FavKey));
             int mod = fields.Count(f => f.Available && f.IsModified());
@@ -432,13 +431,13 @@ namespace VfxControl.EditorTools
         }
 
         // Reset every modified renderer field on the selected instances to the fresh-create default.
-        void ResetRendererToDefaults()
+        private void ResetRendererToDefaults()
         {
             var renderers = GetRenderers();
             if (renderers.Length == 0) return;
             var so = new SerializedObject(renderers.Cast<Object>().ToArray());
             so.Update();
-            foreach (var f in BuildRendererFields(so, renderers, GetRendererDefaults()))
+            foreach (var f in BuildRendererFields(so, GetRendererDefaults()))
                 if (f.Available && f.IsModified()) f.Reset();
             so.ApplyModifiedProperties();
         }

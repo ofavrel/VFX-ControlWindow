@@ -10,13 +10,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
 using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.Profiling;
-using UnityEngine.Rendering;
 using UnityEngine.UIElements;
-using UnityEngine.VFX;
 using Object = UnityEngine.Object;
 
 namespace VfxControl.EditorTools
@@ -25,33 +21,33 @@ namespace VfxControl.EditorTools
     {
         // property name -> actions that re-read the value into each control showing it,
         // so a pinned card and its category row (etc.) stay in sync after any edit.
-        readonly Dictionary<string, List<Action>> _refreshers = new Dictionary<string, List<Action>>();
+        private readonly Dictionary<string, List<Action>> _refreshers = new Dictionary<string, List<Action>>();
 
         // category name -> accent color, assigned distinctly in order of appearance.
-        readonly Dictionary<string, Color> _categoryColors = new Dictionary<string, Color>();
+        private readonly Dictionary<string, Color> _categoryColors = new Dictionary<string, Color>();
 
         // struct parent -> its descendant leaf properties (for pin-all / reset-all).
-        readonly Dictionary<VfxExposedParam, List<VfxExposedParam>> _structLeaves =
+        private readonly Dictionary<VfxExposedParam, List<VfxExposedParam>> _structLeaves =
             new Dictionary<VfxExposedParam, List<VfxExposedParam>>();
 
         // struct header rows + their leaves, so a child edit can re-bold/aggregate live.
-        readonly List<(VisualElement header, List<VfxExposedParam> leaves)> _structHeaders =
+        private readonly List<(VisualElement header, List<VfxExposedParam> leaves)> _structHeaders =
             new List<(VisualElement, List<VfxExposedParam>)>();
 
         // single-element structs (e.g. spaceable Position/Direction) -> their one leaf;
         // these render as a normal row (label + control + space) instead of a card.
-        readonly Dictionary<VfxExposedParam, VfxExposedParam> _flattenChild =
+        private readonly Dictionary<VfxExposedParam, VfxExposedParam> _flattenChild =
             new Dictionary<VfxExposedParam, VfxExposedParam>();
 
         // scalar-only structs (e.g. Flipbook X/Y) -> their leaves; rendered inline on
         // one row like a Vector2/3/4 instead of a multi-row card.
-        readonly Dictionary<VfxExposedParam, List<VfxExposedParam>> _inlineStruct =
+        private readonly Dictionary<VfxExposedParam, List<VfxExposedParam>> _inlineStruct =
             new Dictionary<VfxExposedParam, List<VfxExposedParam>>();
         // Fill `container` with the filtered pinned tray + category groups. `showEmpty`
         // suppresses the "nothing matches" note when stacked under other blocks (All tab).
         // Category groups for the Properties content. The Favorites group is added separately
         // by the tab builder (AddFavoriteGroup), so this is purely the categorized list.
-        void PopulateProperties(VisualElement container, bool showEmpty = true)
+        private void PopulateProperties(VisualElement container, bool showEmpty = true)
         {
             if (container == null) return;
             BuildStructLeavesMap();
@@ -88,13 +84,13 @@ namespace VfxControl.EditorTools
             }
         }
 
-        string CategoryOf(VfxExposedParam p) => string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category;
+        private string CategoryOf(VfxExposedParam p) => string.IsNullOrEmpty(p.Category) ? "Uncategorized" : p.Category;
 
         // For each struct parent, collect its descendant leaf properties (entries that
         // follow it with greater depth), used by the header's pin-all / reset-all.
         // Classify struct rendering (delegated to the pure VfxPropertyLayout.ClassifyStructs), then
         // copy into the live dicts the body reads.
-        void BuildStructLeavesMap()
+        private void BuildStructLeavesMap()
         {
             var m = VfxPropertyLayout.ClassifyStructs(_params);
             _structLeaves.Clear();
@@ -107,7 +103,7 @@ namespace VfxControl.EditorTools
 
         // Ordered entries to display: visible leaves plus any struct parent that has a
         // visible descendant (so a shown child still appears under its struct label).
-        List<VfxExposedParam> ComputeDisplay(List<VfxExposedParam> entries)
+        private List<VfxExposedParam> ComputeDisplay(List<VfxExposedParam> entries)
         {
             int n = entries.Count;
             var show = new bool[n];
@@ -129,7 +125,7 @@ namespace VfxControl.EditorTools
         // Like ComputeDisplay but keyed on favorites: favorited leaves + the struct parents that
         // contain them — so a pinned struct (e.g. Box) keeps its header row + Edit-Gizmo, not a
         // flat list of components. Operates over the whole param list (favorites span categories).
-        List<VfxExposedParam> ComputeFavoriteDisplay()
+        private List<VfxExposedParam> ComputeFavoriteDisplay()
         {
             int n = _params.Count;
             var show = new bool[n];
@@ -147,7 +143,8 @@ namespace VfxControl.EditorTools
             for (int i = 0; i < n; i++) if (show[i]) list.Add(_params[i]);
             return list;
         }
-        VisualElement BuildGroup(string category, List<VfxExposedParam> props, bool forceOpen, VfxExposedParam gate = null)
+
+        private VisualElement BuildGroup(string category, List<VfxExposedParam> props, bool forceOpen, VfxExposedParam gate = null)
         {
             bool open = forceOpen || !_collapsed.Contains(category);
 
@@ -166,9 +163,9 @@ namespace VfxControl.EditorTools
             var dot = MakeElement("vfx-dot");
             dot.style.backgroundColor = GetCategoryColor(category);
             header.Add(dot);
-            var title = new Label(category);
-            title.AddToClassList("vfx-group-title");
-            header.Add(title);
+            var titleLabel = new Label(category);
+            titleLabel.AddToClassList("vfx-group-title");
+            header.Add(titleLabel);
             BaseField<bool> gateToggle = null;
             if (gate != null)
             {
@@ -233,7 +230,7 @@ namespace VfxControl.EditorTools
         // separately so the user can still expand to peek. The toggle lives in the header,
         // so disabling the whole content is safe — it stays interactive. Ambiguous multi-edit
         // (mixed values) counts as enabled, so nothing is greyed when unsure.
-        void ApplyCategoryGate(VisualElement group, VisualElement content, VfxExposedParam gate)
+        private void ApplyCategoryGate(VisualElement group, VisualElement content, VfxExposedParam gate)
         {
             bool off = VfxPropertySheet.GetValue(_so, gate) is bool b && !b && !IsMixed(gate);
             content.SetEnabled(!off);                         // native disabled tint + blocks input
@@ -242,7 +239,7 @@ namespace VfxControl.EditorTools
 
         // Auto-detect a category's enable gate: a top-level bool leaf whose label matches
         // the category, or is "Enable <Category>" / "Use <Category>" (case/space-insensitive).
-        VfxExposedParam FindCategoryGate(string category, List<VfxExposedParam> props)
+        private VfxExposedParam FindCategoryGate(string category, List<VfxExposedParam> props)
         {
             if (category == "Uncategorized" || props.Count == 0) return null;
             int minDepth = props.Min(p => p.Depth);
@@ -258,12 +255,12 @@ namespace VfxControl.EditorTools
             return fallback;
         }
 
-        static string NormGate(string s) =>
+        private static string NormGate(string s) =>
             string.IsNullOrEmpty(s) ? "" : s.Replace(" ", "").Replace("_", "").ToLowerInvariant();
 
         // Render the ordered (already-filtered) entries, nesting struct children inside
         // their collapsible struct parent so depth maps to real containment.
-        void AddDisplayEntries(VisualElement parent, List<VfxExposedParam> entries, bool forceOpen)
+        private void AddDisplayEntries(VisualElement parent, List<VfxExposedParam> entries, bool forceOpen)
         {
             var stack = new Stack<(int depth, VisualElement container)>();
             stack.Push((-1, parent));
@@ -304,16 +301,16 @@ namespace VfxControl.EditorTools
             }
         }
 
-        string StructKey(VfxExposedParam p) => "struct:" + p.Name;
+        private string StructKey(VfxExposedParam p) => "struct:" + p.Name;
 
-        void ApplyCollapse(VfxExposedParam structParam, bool collapse)
+        private void ApplyCollapse(VfxExposedParam structParam, bool collapse)
         {
             if (collapse) _collapsed.Add(StructKey(structParam));
             else _collapsed.Remove(StructKey(structParam));
         }
 
         // All struct entries nested under a given struct (for Alt+click recurse-all).
-        IEnumerable<VfxExposedParam> DescendantStructs(VfxExposedParam p)
+        private IEnumerable<VfxExposedParam> DescendantStructs(VfxExposedParam p)
         {
             int i = _params.IndexOf(p);
             if (i < 0) yield break;
@@ -325,7 +322,7 @@ namespace VfxControl.EditorTools
         // Section-group collapse keys per content area (categories + structs for Properties,
         // the fixed section-group keys for Playback/Renderer). Used to drive the whole
         // hierarchy from a single Alt+click, like Alt+click on a category/struct header.
-        IEnumerable<string> PropertyCollapseKeys()
+        private IEnumerable<string> PropertyCollapseKeys()
         {
             var seenCat = new HashSet<string>();
             foreach (var p in _params)
@@ -335,14 +332,15 @@ namespace VfxControl.EditorTools
                 if (seenCat.Add(c)) yield return c;
             }
         }
-        static readonly string[] PlaybackCollapseKeys = { "play:options", "play:events" };
-        static readonly string[] RendererCollapseKeys = { "render:probes", "render:additional" };
-        static readonly string[] DebugCollapseKeys = { "debug:live", "debug:systems", "debug:textures", "debug:particles", "debug:visualizers" };
+
+        private static readonly string[] PlaybackCollapseKeys = { "play:options", "play:events" };
+        private static readonly string[] RendererCollapseKeys = { "render:probes", "render:additional" };
+        private static readonly string[] DebugCollapseKeys = { "debug:live", "debug:systems", "debug:textures", "debug:particles", "debug:visualizers" };
 
         // The collapsible keys inside one All-tab section ("Properties"/"Playback"/"Renderer").
-        IEnumerable<string> AllSectionCollapseKeys(string title)
+        private IEnumerable<string> AllSectionCollapseKeys(string heading)
         {
-            switch (title)
+            switch (heading)
             {
                 case "Properties": return PropertyCollapseKeys();
                 case "Playback": return PlaybackCollapseKeys;
@@ -353,7 +351,7 @@ namespace VfxControl.EditorTools
 
         // Every collapsible key inside a tab's body (for Alt+click on the tab). The All tab
         // also includes its own top-level section headers so the whole tree folds at once.
-        IEnumerable<string> TabCollapseKeys(string tabId)
+        private IEnumerable<string> TabCollapseKeys(string tabId)
         {
             switch (tabId)
             {
@@ -367,7 +365,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        void SetCollapsedAll(IEnumerable<string> keys, bool collapse)
+        private void SetCollapsedAll(IEnumerable<string> keys, bool collapse)
         {
             foreach (var k in keys)
                 if (collapse) _collapsed.Add(k); else _collapsed.Remove(k);
@@ -375,7 +373,7 @@ namespace VfxControl.EditorTools
 
         // A compound parent (e.g. AABox): a collapsible header with pin-all / reset-all
         // acting on every component; children are added into `content` by the caller.
-        VisualElement BuildStructGroup(VfxExposedParam p, VisualElement content, bool forceOpen)
+        private VisualElement BuildStructGroup(VfxExposedParam p, VisualElement content, bool forceOpen)
         {
             var container = MakeElement("vfx-struct");
             var leaves = _structLeaves.TryGetValue(p, out var l) ? l : new List<VfxExposedParam>();
@@ -429,7 +427,7 @@ namespace VfxControl.EditorTools
         }
 
         // reset-all / pin-all tools that act on every leaf of a struct (header or inline row)
-        VisualElement BuildBulkTools(List<VfxExposedParam> leaves)
+        private VisualElement BuildBulkTools(List<VfxExposedParam> leaves)
         {
             var tools = MakeElement("vfx-row-tools");
             var resetAll = MakeIconButton("↺", "Reset all components", () =>
@@ -456,7 +454,7 @@ namespace VfxControl.EditorTools
 
         // A scalar-only struct (e.g. Flipbook X/Y) rendered inline on one row: parent
         // label + space, then each component as a labeled mini field, like a Vector2.
-        VisualElement BuildInlineStructRow(VfxExposedParam p, List<VfxExposedParam> comps)
+        private VisualElement BuildInlineStructRow(VfxExposedParam p, List<VfxExposedParam> comps)
         {
             var row = MakeElement("vfx-row");
             row.userData = p;
@@ -494,7 +492,7 @@ namespace VfxControl.EditorTools
 
         // `labelText`/`spaceFrom` let a single-element struct render through this same
         // row using the parent's label + space while editing the one child leaf `p`.
-        VisualElement BuildRow(VfxExposedParam p, string labelText = null, VfxExposedParam spaceFrom = null)
+        private VisualElement BuildRow(VfxExposedParam p, string labelText = null, VfxExposedParam spaceFrom = null)
         {
             var row = MakeElement("vfx-row");
             row.userData = p;
@@ -542,14 +540,14 @@ namespace VfxControl.EditorTools
             return row;
         }
 
-        void UpdateRowModifiedClass(VisualElement row, VfxExposedParam p)
+        private void UpdateRowModifiedClass(VisualElement row, VfxExposedParam p)
         {
             row.EnableInClassList("vfx-row--modified", VfxPropertySheet.IsOverridden(_so, p));
         }
 
         // A small chain-link toggle (like the Transform scale lock): when on, editing
         // one component scales the others proportionally.
-        VisualElement BuildConstrainToggle(VfxExposedParam p)
+        private VisualElement BuildConstrainToggle(VfxExposedParam p)
         {
             bool on = IsConstrained(p);
             var btn = new Button(() => ToggleConstrain(p))
@@ -578,7 +576,7 @@ namespace VfxControl.EditorTools
         // Make the property label a drag-scrub zone for numeric controls, matching a
         // native FloatField/IntegerField (whose own label is the drag zone). Slider
         // and vector fields already have their own drag affordances.
-        static void AttachLabelDragger(Label label, VisualElement control)
+        private static void AttachLabelDragger(Label label, VisualElement control)
         {
             switch (control)
             {
@@ -607,7 +605,7 @@ namespace VfxControl.EditorTools
         // builds the typed value control; `row` may be null (pinned card). Every
         // control is wired through Bind so edits write to the sheet AND re-sync any
         // other control showing the same property (e.g. pinned card vs category row).
-        VisualElement BuildControl(VfxExposedParam p, VisualElement row)
+        private VisualElement BuildControl(VfxExposedParam p, VisualElement row)
         {
             if (p.IsEnum)
                 return Bind(new PopupField<string>(p.EnumValues, 0), p, row,
@@ -668,7 +666,7 @@ namespace VfxControl.EditorTools
         // register a refresher so all controls for this property stay in sync.
         // `constrain` (if given) proportionally adjusts a multi-component value when
         // the property's "constrain proportions" toggle is on (previous -> next).
-        BaseField<T> Bind<T>(BaseField<T> field, VfxExposedParam p, VisualElement row,
+        private BaseField<T> Bind<T>(BaseField<T> field, VfxExposedParam p, VisualElement row,
                              Func<object, T> toControl, Func<T, object> toModel,
                              Func<T, T, T> constrain = null)
         {
@@ -696,13 +694,13 @@ namespace VfxControl.EditorTools
 
         // ---- constrain-proportions (like the Transform scale lock) ----
 
-        bool IsMultiComponent(VfxExposedParam p) =>
+        private bool IsMultiComponent(VfxExposedParam p) =>
             p.SheetType == "m_Vector2f" || p.SheetType == "m_Vector3f" ||
             (p.SheetType == "m_Vector4f" && p.RealType != "Color");
 
-        bool IsConstrained(VfxExposedParam p) => _constrained.Contains(p.Name);
+        private bool IsConstrained(VfxExposedParam p) => _constrained.Contains(p.Name);
 
-        void ToggleConstrain(VfxExposedParam p)
+        private void ToggleConstrain(VfxExposedParam p)
         {
             if (!_constrained.Remove(p.Name)) _constrained.Add(p.Name);
             _state.SaveConstrained(_constrained);
@@ -711,7 +709,7 @@ namespace VfxControl.EditorTools
 
         // ---- copy / paste (interops with the Inspector via UnityEditor.Clipboard) ----
 
-        static bool IsCopyPasteSupported(VfxExposedParam p)
+        private static bool IsCopyPasteSupported(VfxExposedParam p)
         {
             switch (p.SheetType)
             {
@@ -724,7 +722,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        void AddCopyPasteMenu(VisualElement target, VfxExposedParam p)
+        private void AddCopyPasteMenu(VisualElement target, VfxExposedParam p)
         {
             if (!IsCopyPasteSupported(p)) return;
             target.AddManipulator(new ContextualMenuManipulator(evt =>
@@ -735,7 +733,7 @@ namespace VfxControl.EditorTools
             }));
         }
 
-        void CopyValue(VfxExposedParam p)
+        private void CopyValue(VfxExposedParam p)
         {
             object val = VfxPropertySheet.GetValue(_so, p);
             switch (p.SheetType)
@@ -753,7 +751,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        bool CanPaste(VfxExposedParam p)
+        private bool CanPaste(VfxExposedParam p)
         {
             switch (p.SheetType)
             {
@@ -766,7 +764,7 @@ namespace VfxControl.EditorTools
             }
         }
 
-        void PasteValue(VfxExposedParam p)
+        private void PasteValue(VfxExposedParam p)
         {
             switch (p.SheetType)
             {
@@ -782,14 +780,14 @@ namespace VfxControl.EditorTools
             RefreshProperty(p);
         }
 
-        void RegisterRefresher(string name, Action refresh)
+        private void RegisterRefresher(string name, Action refresh)
         {
             if (!_refreshers.TryGetValue(name, out var list))
                 _refreshers[name] = list = new List<Action>();
             list.Add(refresh);
         }
         // Re-sync every control bound to this property (and the footer) after an edit.
-        void RefreshProperty(VfxExposedParam p)
+        private void RefreshProperty(VfxExposedParam p)
         {
             if (_refreshers.TryGetValue(p.Name, out var list))
                 foreach (var refresh in list) refresh();
@@ -800,7 +798,7 @@ namespace VfxControl.EditorTools
         }
         // Assign each category its accent-dot color (delegated to VfxPropertyLayout.AssignCategoryColors,
         // keyword palette else distinct fallback), cached per build. Empty category → "Uncategorized".
-        void BuildCategoryColorMap()
+        private void BuildCategoryColorMap()
         {
             _categoryColors.Clear();
             foreach (var kv in VfxPropertyLayout.AssignCategoryColors(
@@ -808,16 +806,16 @@ namespace VfxControl.EditorTools
                 _categoryColors[kv.Key] = kv.Value;
         }
 
-        Color GetCategoryColor(string category)
+        private Color GetCategoryColor(string category)
         {
             if (_categoryColors.Count == 0) BuildCategoryColorMap();
             return _categoryColors.TryGetValue(category, out var c) ? c : VfxPropertyLayout.DefaultDotColor;
         }
         // ---- spaceable property space icon (display only) ----
 
-        static readonly Dictionary<string, Texture2D> s_SpaceIcons = new Dictionary<string, Texture2D>();
+        private static readonly Dictionary<string, Texture2D> s_SpaceIcons = new Dictionary<string, Texture2D>();
 
-        static Texture2D LoadSpaceTexture(string space)
+        private static Texture2D LoadSpaceTexture(string space)
         {
             if (string.IsNullOrEmpty(space)) space = "None";
             string skin = EditorGUIUtility.isProSkin ? "d_" : "";
@@ -842,7 +840,7 @@ namespace VfxControl.EditorTools
 
         // The property's coordinate space (World/Local/None), shown read-only to the
         // right of the label; it's authored in the VFX graph, not here.
-        VisualElement BuildSpaceIcon(VfxExposedParam p)
+        private VisualElement BuildSpaceIcon(VfxExposedParam p)
         {
             if (!p.Spaceable) return null;
             var tex = LoadSpaceTexture(p.Space);

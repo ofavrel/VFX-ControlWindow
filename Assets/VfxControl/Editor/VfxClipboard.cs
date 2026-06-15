@@ -14,13 +14,13 @@ namespace VfxControl.EditorTools
 {
     internal static class VfxClipboard
     {
-        static readonly Type s_Type = AppDomain.CurrentDomain.GetAssemblies()
+        private static readonly Type s_Type = AppDomain.CurrentDomain.GetAssemblies()
             .Select(a => a.GetType("UnityEditor.Clipboard"))
             .FirstOrDefault(t => t != null);
 
-        static readonly Dictionary<string, PropertyInfo> s_Props = new Dictionary<string, PropertyInfo>();
+        private static readonly Dictionary<string, PropertyInfo> s_Props = new Dictionary<string, PropertyInfo>();
 
-        static PropertyInfo Prop(string name)
+        private static PropertyInfo Prop(string name)
         {
             if (s_Type == null) return null;
             if (!s_Props.TryGetValue(name, out var p))

@@ -21,11 +21,11 @@ namespace VfxControl.EditorTools
     internal static class VfxPropertySheet
     {
         // The serialized field names of one m_PropertySheet.<sheetType>.m_Array element.
-        const string NameField = "m_Name";
-        const string ValueField = "m_Value";
-        const string OverriddenField = "m_Overridden";
+        private const string NameField = "m_Name";
+        private const string ValueField = "m_Value";
+        private const string OverriddenField = "m_Overridden";
 
-        static string ArrayPath(VfxExposedParam p) => $"m_PropertySheet.{p.SheetType}.m_Array";
+        private static string ArrayPath(VfxExposedParam p) => $"m_PropertySheet.{p.SheetType}.m_Array";
 
         /// The serialized array element whose m_Name matches the property, or null
         /// if this property has never been touched on the component.
@@ -121,7 +121,7 @@ namespace VfxControl.EditorTools
         //
         // Each supported SerializedPropertyType is described once — its read + write — so adding
         // a type is a single entry. Unlisted types read as null and ignore writes.
-        static readonly Dictionary<SerializedPropertyType,
+        private static readonly Dictionary<SerializedPropertyType,
             (Func<SerializedProperty, object> Read, Action<SerializedProperty, object> Write)> s_TypeBridge = new()
         {
             { SerializedPropertyType.Float,           (p => p.floatValue,           (p, v) => p.floatValue = Convert.ToSingle(v)) },
@@ -138,10 +138,10 @@ namespace VfxControl.EditorTools
             { SerializedPropertyType.AnimationCurve,  (p => p.animationCurveValue,  (p, v) => p.animationCurveValue = (AnimationCurve)v) },
         };
 
-        static object ReadValue(SerializedProperty prop) =>
+        private static object ReadValue(SerializedProperty prop) =>
             s_TypeBridge.TryGetValue(prop.propertyType, out var b) ? b.Read(prop) : null;
 
-        static void WriteValue(SerializedProperty prop, object value)
+        private static void WriteValue(SerializedProperty prop, object value)
         {
             if (s_TypeBridge.TryGetValue(prop.propertyType, out var b)) b.Write(prop, value);
         }

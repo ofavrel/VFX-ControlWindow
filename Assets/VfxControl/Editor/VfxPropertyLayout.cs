@@ -63,7 +63,7 @@ namespace VfxControl.EditorTools
         // Category accent dots — a small custom palette (handoff): desaturated to sit calmly against
         // the gray UI. Conventional category names get a themed color; everything else is assigned a
         // distinct palette color by order of appearance (NOT a hash, which collapsed names onto one).
-        static readonly (string key, Color color)[] s_CatPalette =
+        private static readonly (string key, Color color)[] s_CatPalette =
         {
             ("spawn",   Hex("#c98a3a")),
             ("color",   Hex("#c95a4a")),
@@ -76,7 +76,7 @@ namespace VfxControl.EditorTools
             ("render",  Hex("#8a6ac9")),
         };
 
-        static readonly Color[] s_Fallback =
+        private static readonly Color[] s_Fallback =
         {
             Hex("#c98a3a"), Hex("#c95a4a"), Hex("#4a8ac9"), Hex("#7a9a4a"),
             Hex("#8a6ac9"), Hex("#4aa39a"), Hex("#c08ac9"), Hex("#9a9a4a"),

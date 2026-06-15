@@ -56,63 +56,66 @@ namespace VfxControl.EditorTools
         // VFX Graph package update, audit THIS region: the namespace/assembly, the type short-name
         // T_* consts, and the `s_*` handle declarations whose comments name each member + signature.
         // s_PackageVersion (vs AuthoredAgainstVersion) is logged on a binding failure to flag drift.
-        const string VfxNs = "UnityEditor.VFX.";          // namespace of every editor-internal VFX type
-        const string VfxAsm = "Unity.VisualEffectGraph.Editor"; // assembly they live in
-        const string T_ParameterInfo = "VFXParameterInfo"; // resolved both assembly-qualified + by scan
-        const string AuthoredAgainstVersion = "17.6.0";   // VFX Graph version this contract was written for
-        static string s_PackageVersion;                   // actual installed version (for diagnostics)
+        private const string VfxNs = "UnityEditor.VFX.";          // namespace of every editor-internal VFX type
+        private const string VfxAsm = "Unity.VisualEffectGraph.Editor"; // assembly they live in
+        private const string T_ParameterInfo = "VFXParameterInfo"; // resolved both assembly-qualified + by scan
+        private const string AuthoredAgainstVersion = "17.6.0";   // VFX Graph version this contract was written for
+        private static string s_PackageVersion;                   // actual installed version (for diagnostics)
 
         // Cached reflection handles, resolved lazily once.
-        static bool s_Resolved;
-        static bool s_Available;
-        static MethodInfo s_GetResource;       // static VisualEffectResource GetResource(VisualEffectObject)
-        static MethodInfo s_GetOrCreateGraph;  // static VFXGraph GetOrCreateGraph(VisualEffectResource)
-        static FieldInfo s_ParameterInfoField; // VFXParameterInfo[] VFXGraph.m_ParameterInfo
-        static MethodInfo s_BuildParameterInfo; // void VFXGraph.BuildParameterInfo()
+        private static bool s_Resolved;
+        private static bool s_Available;
+        private static MethodInfo s_GetResource;       // static VisualEffectResource GetResource(VisualEffectObject)
+        private static MethodInfo s_GetOrCreateGraph;  // static VFXGraph GetOrCreateGraph(VisualEffectResource)
+        private static FieldInfo s_ParameterInfoField; // VFXParameterInfo[] VFXGraph.m_ParameterInfo
+        private static MethodInfo s_BuildParameterInfo; // void VFXGraph.BuildParameterInfo()
 
         // Field handles on the VFXParameterInfo struct.
-        static FieldInfo s_fName, s_fPath, s_fSheetType, s_fRealType, s_fTooltip,
+        private static FieldInfo s_fName, s_fPath, s_fSheetType, s_fRealType, s_fTooltip,
                          s_fMin, s_fMax, s_fEnumValues, s_fDescendantCount, s_fDefaultValue,
                          s_fSpace, s_fSpaceable;
-        static MethodInfo s_SerializableGet; // object VFXSerializableObject.Get()
+
+        private static MethodInfo s_SerializableGet; // object VFXSerializableObject.Get()
 
         // Event-block enumeration: VFXBasicEvent.eventName + VFXGraph.children.
-        static Type s_BasicEventType;          // UnityEditor.VFX.VFXBasicEvent (a VFXContext)
-        static FieldInfo s_fEventName;         // public string VFXBasicEvent.eventName
-        static PropertyInfo s_ChildrenProp;    // IEnumerable<VFXModel> VFXModel.children
+        private static Type s_BasicEventType;          // UnityEditor.VFX.VFXBasicEvent (a VFXContext)
+        private static FieldInfo s_fEventName;         // public string VFXBasicEvent.eventName
+        private static PropertyInfo s_ChildrenProp;    // IEnumerable<VFXModel> VFXModel.children
 
         // Blackboard custom attributes: VFXGraph.customAttributes (VFXCustomAttributeDescriptor[]),
         // each with attributeName + type (CustomAttributeUtility.Signature, 0..6 = Float..Int).
-        static PropertyInfo s_CustomAttrsProp;
+        private static PropertyInfo s_CustomAttrsProp;
 
         // --- Debug-tab profiling extras (all optional; degrade to no data) ---
         // Attribute layout → per-system buffer size: VFXContext.GetData() → VFXDataParticle,
         // .GetCurrentAttributeLayout() → StructureOfArrayProvider.BucketInfo[] (each .size in dwords).
         // System name via VFXGraph.systemNames.GetUniqueSystemName(VFXData).
-        static Type s_ContextType, s_DataParticleType;
-        static MethodInfo s_GetData;             // VFXData VFXContext.GetData()
-        static MethodInfo s_GetCurrentLayout;    // BucketInfo[] VFXDataParticle.GetCurrentAttributeLayout()
-        static PropertyInfo s_DataSpaceProp;     // VFXSpace VFXDataParticle.space (None/Local/World)
-        static FieldInfo s_BucketSizeField;      // int BucketInfo.size (resolved from the returned element type)
-        static FieldInfo s_BucketAttribsField;   // VFXAttribute[] BucketInfo.attributes (per dword channel)
-        static FieldInfo s_AttrNameField;        // string VFXAttribute.name
-        static PropertyInfo s_AttrTypeProp;      // VFXValueType VFXAttribute.type
-        static PropertyInfo s_SystemNamesProp;   // VFXSystemNames VFXGraph.systemNames
-        static MethodInfo s_GetUniqueSystemName; // string VFXSystemNames.GetUniqueSystemName(VFXData)
+        private static Type s_ContextType, s_DataParticleType;
+        private static MethodInfo s_GetData;             // VFXData VFXContext.GetData()
+        private static MethodInfo s_GetCurrentLayout;    // BucketInfo[] VFXDataParticle.GetCurrentAttributeLayout()
+        private static PropertyInfo s_DataSpaceProp;     // VFXSpace VFXDataParticle.space (None/Local/World)
+        private static FieldInfo s_BucketSizeField;      // int BucketInfo.size (resolved from the returned element type)
+        private static FieldInfo s_BucketAttribsField;   // VFXAttribute[] BucketInfo.attributes (per dword channel)
+        private static FieldInfo s_AttrNameField;        // string VFXAttribute.name
+        private static PropertyInfo s_AttrTypeProp;      // VFXValueType VFXAttribute.type
+        private static PropertyInfo s_SystemNamesProp;   // VFXSystemNames VFXGraph.systemNames
+
+        private static MethodInfo s_GetUniqueSystemName; // string VFXSystemNames.GetUniqueSystemName(VFXData)
         // Texture usage: walk slot containers' inputSlots + sub-slots, read VFXSlot.value as Texture
         // (slot members resolved by name per object via GetProp — no cached handles needed).
         // Component profiler markers (internal instance methods on the runtime VisualEffect).
-        static MethodInfo s_CpuEffectMarker;     // string GetCPUEffectMarkerName(VFXCPUEffectMarkers)
-        static object s_CpuEffectMarkerArg;      // VisualEffect.VFXCPUEffectMarkers.FullUpdate
-        static MethodInfo s_CpuSystemMarker;     // string GetCPUSystemMarkerName(string)
-        static MethodInfo s_GpuTaskMarker;       // string GetGPUTaskMarkerName(string, int)
+        private static MethodInfo s_CpuEffectMarker;     // string GetCPUEffectMarkerName(VFXCPUEffectMarkers)
+        private static object s_CpuEffectMarkerArg;      // VisualEffect.VFXCPUEffectMarkers.FullUpdate
+        private static MethodInfo s_CpuSystemMarker;     // string GetCPUSystemMarkerName(string)
+
+        private static MethodInfo s_GpuTaskMarker;       // string GetGPUTaskMarkerName(string, int)
         // Per-system CPU/GPU markers are only emitted while the component is registered for profiling.
-        static MethodInfo s_Register, s_Unregister, s_IsRegistered;
+        private static MethodInfo s_Register, s_Unregister, s_IsRegistered;
 
         /// When true, GetExposedParameters logs each resolution/enumeration step.
         internal static bool Verbose;
 
-        static void Log(string msg)
+        private static void Log(string msg)
         {
             if (Verbose) Debug.Log("[VFX Control] " + msg);
         }
@@ -139,7 +142,7 @@ namespace VfxControl.EditorTools
                    $"profilingReg={s_Register != null}";
         }
 
-        static void Resolve()
+        private static void Resolve()
         {
             if (s_Resolved) return;
             s_Resolved = true;
@@ -273,11 +276,11 @@ namespace VfxControl.EditorTools
         }
 
         // "installed 17.6.0, authored 17.6.0" — surfaces a package-version mismatch in warnings/diag.
-        static string VersionNote() => $"installed {s_PackageVersion ?? "?"}, authored {AuthoredAgainstVersion}";
+        private static string VersionNote() => $"installed {s_PackageVersion ?? "?"}, authored {AuthoredAgainstVersion}";
 
         // A non-generic, parameterless method by name — tolerant of overloads that
         // would make Type.GetMethod throw AmbiguousMatchException.
-        static MethodInfo FindParameterless(Type type, string name, BindingFlags flags)
+        private static MethodInfo FindParameterless(Type type, string name, BindingFlags flags)
         {
             return type.GetMethods(flags)
                        .FirstOrDefault(m => m.Name == name &&
@@ -502,7 +505,7 @@ namespace VfxControl.EditorTools
         // CustomAttributeUtility.Signature (boxed) → our payload type index (Float=0 … Int=6).
         // Mapped by enum NAME, not ordinal, so reordering/inserting Signature members in a future
         // package can't silently mistype an attribute (mirrors GetSystemSpaces' by-name space map).
-        static int SignatureIndex(object signature)
+        private static int SignatureIndex(object signature)
         {
             switch (signature.ToString())
             {
@@ -520,7 +523,7 @@ namespace VfxControl.EditorTools
         }
 
         // Read a member by property name (preferred) or serialized field name (fallback).
-        static object ReadMember(object obj, string prop, string field)
+        private static object ReadMember(object obj, string prop, string field)
         {
             const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
             var t = obj.GetType();
@@ -532,9 +535,9 @@ namespace VfxControl.EditorTools
 
         // ---- Debug-tab profiling helpers ---------------------------------------------------
 
-        const BindingFlags InstanceAny = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        private const BindingFlags InstanceAny = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 
-        static bool TryGetGraph(VisualEffectAsset asset, out object graph)
+        private static bool TryGetGraph(VisualEffectAsset asset, out object graph)
         {
             graph = null;
             var resource = s_GetResource.Invoke(null, new object[] { asset });
@@ -545,7 +548,7 @@ namespace VfxControl.EditorTools
 
         // A parameterless instance property by name (first match — tolerant of `new`-hidden overrides
         // like VFXModel.children / VFXGraph.children).
-        static object GetProp(object obj, string name)
+        private static object GetProp(object obj, string name)
         {
             if (obj == null) return null;
             try
@@ -587,13 +590,13 @@ namespace VfxControl.EditorTools
             return result;
         }
 
-        static void ScanContainer(object container, List<Texture> result, HashSet<Texture> seen)
+        private static void ScanContainer(object container, List<Texture> result, HashSet<Texture> seen)
         {
             if (GetProp(container, "inputSlots") is IEnumerable slots)
                 foreach (var slot in slots) ScanSlot(slot, result, seen);
         }
 
-        static void ScanSlot(object slot, List<Texture> result, HashSet<Texture> seen)
+        private static void ScanSlot(object slot, List<Texture> result, HashSet<Texture> seen)
         {
             if (slot == null) return;
             if (GetProp(slot, "value") is Texture tex && tex != null && seen.Add(tex))
@@ -612,7 +615,7 @@ namespace VfxControl.EditorTools
         // graph's children, keeps the particle-data contexts (deduped — contexts share one data per
         // system), yields each system's BucketInfo[] and resolved name. Yields nothing (degrades
         // silently) when the reflection handles or graph aren't available, or a system has no name.
-        static IEnumerable<(Array buckets, string name)> EnumerateSystemLayouts(VisualEffectAsset asset)
+        private static IEnumerable<(Array buckets, string name)> EnumerateSystemLayouts(VisualEffectAsset asset)
         {
             if (asset == null) yield break;
             Resolve();
@@ -725,7 +728,7 @@ namespace VfxControl.EditorTools
         }
 
         // VFXValueType enum (boxed) → a short friendly type name.
-        static string FriendlyAttrType(object valueType)
+        private static string FriendlyAttrType(object valueType)
         {
             switch (valueType?.ToString())
             {
@@ -799,7 +802,7 @@ namespace VfxControl.EditorTools
         public static string CpuSystemMarker(VisualEffect ve, string system) { Resolve(); return InvokeStr(s_CpuSystemMarker, ve, new object[] { system }); }
         public static string GpuTaskMarker(VisualEffect ve, string system, int taskIndex) { Resolve(); return InvokeStr(s_GpuTaskMarker, ve, new object[] { system, taskIndex }); }
 
-        static string InvokeStr(MethodInfo m, object target, object[] args)
+        private static string InvokeStr(MethodInfo m, object target, object[] args)
         {
             if (m == null || target == null) return null;
             try { return m.Invoke(target, args) as string; } catch { return null; }

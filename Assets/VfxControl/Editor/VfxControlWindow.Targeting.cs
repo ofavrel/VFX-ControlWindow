@@ -6,16 +6,9 @@
 // index-safe. Also the per-tab rail section persistence. Split out of VfxControlWindow.cs —
 // same class (partial), shared private state.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
-using UnityEditor.UIElements;
-using UnityEngine;
-using UnityEngine.Profiling;
-using UnityEngine.Rendering;
-using UnityEngine.UIElements;
 using UnityEngine.VFX;
 using Object = UnityEngine.Object;
 
@@ -24,12 +17,13 @@ namespace VfxControl.EditorTools
     public partial class VfxControlWindow : EditorWindow
     {
         // --- target ---
-        VisualEffect _effect;        // primary (drives display + property enumeration)
-        SerializedObject _so;        // primary's serialized object (display reads)
-        readonly List<VisualEffect> _effects = new List<VisualEffect>();      // all edited instances (same asset)
-        readonly List<SerializedObject> _sos = new List<SerializedObject>();  // one per instance (writes apply to all)
-        List<VfxExposedParam> _params = new List<VfxExposedParam>();
-        string _selectionHint; // why there's no editable target (shown as placeholder)
+        private VisualEffect _effect;        // primary (drives display + property enumeration)
+        private SerializedObject _so;        // primary's serialized object (display reads)
+        private readonly List<VisualEffect> _effects = new List<VisualEffect>();      // all edited instances (same asset)
+        private readonly List<SerializedObject> _sos = new List<SerializedObject>();  // one per instance (writes apply to all)
+        private List<VfxExposedParam> _params = new List<VfxExposedParam>();
+
+        private string _selectionHint; // why there's no editable target (shown as placeholder)
         // ------------------------------------------------------------------ target
 
         // Resolve the *scene* VisualEffect component to edit. We deliberately reject
@@ -38,7 +32,7 @@ namespace VfxControl.EditorTools
         // NOT let you edit it as if it were a live instance. This window edits the
         // component's per-instance override sheet, which only makes sense on a
         // scene/prefab-instance object.
-        VisualEffect ResolveSelectedEffect(out string hint)
+        private VisualEffect ResolveSelectedEffect(out string hint)
         {
             hint = null;
 
@@ -63,7 +57,7 @@ namespace VfxControl.EditorTools
             return null;
         }
 
-        void RefreshTarget()
+        private void RefreshTarget()
         {
             var effect = ResolveSelectedEffect(out var hint);
 
@@ -86,7 +80,7 @@ namespace VfxControl.EditorTools
 
         // All selected scene VisualEffects sharing the primary's asset (primary first),
         // so multi-edit applies to instances of the same VFX graph.
-        List<VisualEffect> GatherTargets(VisualEffect primary)
+        private List<VisualEffect> GatherTargets(VisualEffect primary)
         {
             var list = new List<VisualEffect>();
             if (primary == null) return list;
@@ -101,7 +95,7 @@ namespace VfxControl.EditorTools
             return list;
         }
 
-        static bool SameSet(List<VisualEffect> a, List<VisualEffect> b)
+        private static bool SameSet(List<VisualEffect> a, List<VisualEffect> b)
         {
             if (a.Count != b.Count) return false;
             for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
@@ -110,9 +104,9 @@ namespace VfxControl.EditorTools
 
         // Bind the window to a primary VisualEffect (+ any same-asset instances to edit)
         // and load its exposed properties + per-asset UI state.
-        void SetTarget(VisualEffect effect) => SetTarget(effect, GatherTargets(effect));
+        private void SetTarget(VisualEffect effect) => SetTarget(effect, GatherTargets(effect));
 
-        void SetTarget(VisualEffect effect, List<VisualEffect> targets)
+        private void SetTarget(VisualEffect effect, List<VisualEffect> targets)
         {
             _gizmoStruct = null; // gizmo target is invalid for a new component
             _recorders.Clear();  // marker names embed the old effect/system — drop stale Recorders
@@ -156,7 +150,7 @@ namespace VfxControl.EditorTools
         }
 
         // Per-tab rail section, persisted as a packed "tab=section;..." session string.
-        void LoadSections()
+        private void LoadSections()
         {
             _sections.Clear();
             var raw = _state.Sections;
@@ -171,18 +165,18 @@ namespace VfxControl.EditorTools
                 _sections["props"] = _state.Category;
         }
 
-        void SaveSections() =>
+        private void SaveSections() =>
             _state.Sections = string.Join(";", _sections.Select(kv => $"{kv.Key}={kv.Value}"));
 
         // The active tab's selected rail section ("all" when no rail / nothing chosen).
-        string CurrentSection()
+        private string CurrentSection()
         {
             var def = ActiveTabDef();
             if (def == null || !def.HasRail) return "all";
             return _sections.TryGetValue(_tab, out var s) ? s : "all";
         }
 
-        void SetSection(string id)
+        private void SetSection(string id)
         {
             string cur = _sections.TryGetValue(_tab, out var s) ? s : "all";
             _sections[_tab] = (cur == id) ? "all" : id; // re-clicking the active section clears it
@@ -190,23 +184,23 @@ namespace VfxControl.EditorTools
         }
         // ---- multi-instance writes (apply to every edited instance) ----
 
-        void SetValueAll(VfxExposedParam p, object value)
+        private void SetValueAll(VfxExposedParam p, object value)
         {
             foreach (var so in _sos) VfxPropertySheet.SetValue(so, p, value);
         }
 
-        void ResetAll(VfxExposedParam p)
+        private void ResetAll(VfxExposedParam p)
         {
             foreach (var so in _sos) VfxPropertySheet.Reset(so, p);
         }
 
-        void UpdateAllSos()
+        private void UpdateAllSos()
         {
             foreach (var so in _sos) so.Update();
         }
 
         // True when the instances hold different values for this property (→ show mixed).
-        bool IsMixed(VfxExposedParam p)
+        private bool IsMixed(VfxExposedParam p)
         {
             if (_sos.Count < 2) return false;
             object first = VfxPropertySheet.GetValue(_sos[0], p);
