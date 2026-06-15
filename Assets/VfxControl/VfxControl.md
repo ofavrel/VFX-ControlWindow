@@ -534,10 +534,15 @@ Sphere/Circle/Torus variants work with no extra code).
     harmless defaults). Custom (user) attributes aren't captured — the record is a fixed standard set.
     **Multi-system, SELECTED-only:** put a block in **each** system and wire each block's `systemId` to a
     distinct constant (0,1,…); the panel shows a **legend** (`UpdateSystemLegend`, `systemId` = index into
-    `GetSystemAttributeLayout`'s ordered keys = `_systemNames`) so you know which number maps to which
-    system, and a **System column** (`SystemOf(slot)` → `_systemNames`). `systemId = 0` reduces the slot
-    to the old single-system layout (backward compatible). World position resolves space **per system**
-    (`_systemSpaceById[SystemOf(slot)]` from `GetSystemSpaces`), so the overlay/Alt-click framing are
+    `_systemNames`) so you know which number maps to which system, and a **System column**
+    (`SystemOf(slot)` → `_systemNames`). `systemId = 0` reduces the slot to the old single-system layout
+    (backward compatible). World position resolves space **per system** (`_systemSpaceById[SystemOf(slot)]`).
+    **Both `_systemNames` (order) and `_systemSpaceById` come from `GetSystemSpaces`** — which reads the
+    serialized per-system space and does NOT need a compiled attribute layout — so a Local-space system
+    resolves correctly **right after a domain reload** (sourcing them from `GetSystemAttributeLayout`,
+    which is `[NonSerialized]`/empty until recompile, used to zero the space list → Local particles drawn
+    in World until the .vfx was re-saved). `GetSystemAttributeLayout` is used only for the column set
+    (with a default-column fallback when empty). So the overlay/Alt-click framing are
     correct for mixed-space multi-system graphs. **Per-instance
     separation, SELECTED-only:** the user exposes an Int property named `VfxReadbackInstanceId` and wires
     it to the block's `instanceId` input; `AssignReadbackInstanceIds` (~2 Hz — `SetInt` persists; forced

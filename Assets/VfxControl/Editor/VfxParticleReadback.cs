@@ -279,18 +279,30 @@ namespace VfxControl.EditorTools
         {
             _readbackCols.Clear();
             var asset = _primary != null ? _primary.visualEffectAsset : null;
-
-            // systemId (wired per block) = index into the graph's systems in layout order. The same
-            // ordered list drives the System column name, the legend, and the per-system sim space.
-            _systemNames = new List<string>();
-            var present = new HashSet<string>();
+            var spaces = asset != null ? VfxGraphReflection.GetSystemSpaces(asset) : null;
             var layout = asset != null ? VfxGraphReflection.GetSystemAttributeLayout(asset) : null;
+
+            // systemId (wired per block) = index into this ordered system list; it also drives the
+            // System column name, the legend, and the per-system sim space. Source the order + space
+            // from GetSystemSpaces, which reads the serialized per-system space and does NOT need the
+            // graph to be compiled — so a Local-space system resolves correctly right after a domain
+            // reload (the attribute layout is [NonSerialized] and empty until recompile, which used to
+            // zero this list and make Local particles fall back to World until the .vfx was re-saved).
+            // Fall back to the layout's system order (space unknown → World) only if spaces are absent.
+            _systemNames = new List<string>();
+            var spaceList = new List<int>();
+            if (spaces != null && spaces.Count > 0)
+                foreach (var kv in spaces) { _systemNames.Add(kv.Key); spaceList.Add(kv.Value); }
+            else if (layout != null)
+                foreach (var kv in layout) { _systemNames.Add(kv.Key); spaceList.Add(2); }
+            _systemSpaceById = spaceList.ToArray();
+
+            // Columns = attributes the systems actually store (needs the compiled layout); fall back to
+            // a default set when it isn't available yet (graph not compiled this session).
+            var present = new HashSet<string>();
             if (layout != null)
                 foreach (var kv in layout)
-                {
-                    _systemNames.Add(kv.Key);
                     foreach (var f in kv.Value) present.Add(f.Name);
-                }
 
             foreach (var a in VfxReadbackRecord.Attrs)
             {
@@ -298,14 +310,6 @@ namespace VfxControl.EditorTools
                                               : Array.IndexOf(kReadbackDefaultCols, a.Layout) >= 0;
                 if (show) _readbackCols.Add(a);
             }
-
-            // World position needs each system's sim space (Local → transform by the owning instance;
-            // World/unknown → use as-is). Since the slot now records its system, resolve space PER
-            // system rather than guessing one space for the whole asset.
-            _systemSpaceById = new int[_systemNames.Count];
-            var spaces = asset != null ? VfxGraphReflection.GetSystemSpaces(asset) : null;
-            for (int i = 0; i < _systemNames.Count; i++)
-                _systemSpaceById[i] = spaces != null && spaces.TryGetValue(_systemNames[i], out int sp) ? sp : 2; // default World
 
             LoadParticleEyes(asset);
         }
