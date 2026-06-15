@@ -54,15 +54,16 @@ namespace VfxControl.EditorTools.Tests
         }
 
         [Test]
-        public void SortKey_InstanceParticleIdAndAttributeColumns()
+        public void SortKey_SystemInstanceParticleIdAndAttributeColumns()
         {
             var d = OneSlot();
             var cols = new List<Attr> { new Attr("position", "Position", 0, 3, Kind.Float) };
-            // slot 300 with perInstance 256 → instance 1, particleId 44.
-            Assert.That(VfxReadbackRecord.SortKey(d, cols, 300, 0, 256), Is.EqualTo(1));
-            Assert.That(VfxReadbackRecord.SortKey(d, cols, 300, 1, 256), Is.EqualTo(44));
-            // col 2 → first attribute column: float3 sorts by magnitude = |(1,2,3)| = sqrt(14).
-            Assert.That(VfxReadbackRecord.SortKey(d, cols, 0, 2, 256), Is.EqualTo(Mathf.Sqrt(14f)).Within(1e-4));
+            // slot 9004 with perInstance 256, maxInstances 16 → combined 35 → system 2, instance 3, particleId 44.
+            Assert.That(VfxReadbackRecord.SortKey(d, cols, 9004, 0, 256, 16), Is.EqualTo(2));  // system
+            Assert.That(VfxReadbackRecord.SortKey(d, cols, 9004, 1, 256, 16), Is.EqualTo(3));  // instance
+            Assert.That(VfxReadbackRecord.SortKey(d, cols, 9004, 2, 256, 16), Is.EqualTo(44)); // particleId
+            // col 3 → first attribute column: float3 sorts by magnitude = |(1,2,3)| = sqrt(14) (slot 0 data).
+            Assert.That(VfxReadbackRecord.SortKey(d, cols, 0, 3, 256, 16), Is.EqualTo(Mathf.Sqrt(14f)).Within(1e-4));
         }
 
         [Test]
@@ -71,7 +72,7 @@ namespace VfxControl.EditorTools.Tests
             var d = OneSlot();
             var cols = new List<Attr> { new Attr("color", "Color", 8, 3, Kind.Color) };
             double expected = 0.2126 * 0.5 + 0.7152 * 0.6 + 0.0722 * 0.7;
-            Assert.That(VfxReadbackRecord.SortKey(d, cols, 0, 2, 256), Is.EqualTo(expected).Within(1e-4));
+            Assert.That(VfxReadbackRecord.SortKey(d, cols, 0, 3, 256, 16), Is.EqualTo(expected).Within(1e-4));
         }
 
         [Test]

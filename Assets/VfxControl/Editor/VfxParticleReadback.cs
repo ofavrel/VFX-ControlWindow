@@ -35,9 +35,16 @@ namespace VfxControl.EditorTools
         private IReadOnlyList<VisualEffect> _all = Array.Empty<VisualEffect>();
 
         private const int kReadbackPerInstance = 256;    // particle slots per instance (matches the .hlsl)
-        private const int kReadbackMaxInstances = 16;    // instance regions (matches the .hlsl)
-        private const int kReadbackCap = kReadbackPerInstance * kReadbackMaxInstances; // total slots
+        private const int kReadbackMaxInstances = 16;    // instance regions per system (matches the .hlsl)
+        private const int kReadbackMaxSystems = 8;       // system regions in the buffer (matches the .hlsl)
+        private const int kReadbackCap = kReadbackMaxSystems * kReadbackMaxInstances * kReadbackPerInstance; // total slots
         private const int kReadbackFloat4s = kReadbackCap * VfxReadbackRecord.Stride; // float4 buffer length
+
+        // slot = (systemId*kReadbackMaxInstances + instanceId)*kReadbackPerInstance + particleId%kReadbackPerInstance
+        private static int SystemOf(int slot) => (slot / kReadbackPerInstance) / kReadbackMaxInstances;
+        private static int InstanceOf(int slot) => (slot / kReadbackPerInstance) % kReadbackMaxInstances;
+        private static int ParticleIdOf(int slot) => slot % kReadbackPerInstance;
+        private static int CountBits(int m) { int c = 0; while (m != 0) { m &= m - 1; c++; } return c; }
         private const string kReadbackInstanceProp = "VfxReadbackInstanceId"; // exposed Int the user wires to the block
         private static readonly int kReadbackBufferId = Shader.PropertyToID("_VfxReadbackBuffer");
         private static readonly int kReadbackGenId = Shader.PropertyToID("_VfxReadbackGen");
@@ -52,7 +59,6 @@ namespace VfxControl.EditorTools
         private readonly List<VisualEffect> _readbackSelected = new List<VisualEffect>(); // selected instances → ids 0..K-1
         private double _lastInstanceAssign;              // throttle for the SetInt instance-id assignment
         private readonly List<int> _readbackRows = new List<int>(); // slots stamped with _readbackMaxGen → table rows
-        private int _readbackInstanceCount;              // distinct instances present in the last readback
         private bool _readbackPending;                   // an AsyncGPUReadback is in flight
 
         // Decoded columns: which curated attributes the instrumented system(s) actually use,
@@ -64,9 +70,14 @@ namespace VfxControl.EditorTools
         private bool _readbackCaptureOnce;               // a manual Capture was requested
         private double _lastReadbackReq;                 // throttle (~6 Hz)
         private MultiColumnListView _particleTable;
-        private readonly List<Column> _attrColumns = new List<Column>(); // the per-attribute columns (Show/Hide all targets these, not Instance/#)
+        private readonly List<Column> _hideableColumns = new List<Column>(); // System/Instance/attrs — everything Show/Hide-all toggles (the # column stays as a row anchor)
         private Label _readbackCountLabel;
+        private Label _systemLegend;                     // "systemId → name" hint (multi-system)
         private VisualElement _readbackHelp;
+
+        // System dimension: systemId (wired per VfxReadback block) = index into _systemNames (graph order).
+        private List<string> _systemNames = new List<string>();   // systemId → unique system name
+        private int[] _systemSpaceById = Array.Empty<int>();      // systemId → sim space (1 Local, else World/none)
 
         // Scene overlay (Debug ▸ Particles → Scene view): per-attribute "eye" toggles + a selected
         // particle drive a point + value box drawn at the particle's world position.
@@ -74,7 +85,6 @@ namespace VfxControl.EditorTools
         private readonly List<int> _particleSelSlots = new List<int>(); // selected particle SLOTs (stable; drives the overlay)
         private const int kMaxDebugParticles = 24;       // cap on simultaneously-overlaid particles (perf/clutter)
         private const float kFrameMinSize = 0.5f;        // min world box when framing so a tiny particle doesn't over-zoom
-        private int _readbackPosSpace;                   // sim space of the position-bearing system: 1 Local, else World/none
         private VisualEffectAsset _readbackBufferAsset;  // asset whose data is currently in the shared buffer (wipe on change)
         private const string kParticleEyesKeyPrefix = "vfxctrl.particleEyes."; // SessionState, per asset GUID
 
@@ -108,8 +118,9 @@ namespace VfxControl.EditorTools
         public void Build(VisualElement host)
         {
             _particleTable = null;
-            _attrColumns.Clear();
+            _hideableColumns.Clear();
             _readbackCountLabel = null;
+            _systemLegend = null;
             _readbackHelp = null;
 
             // Columns = the curated attributes the asset's systems actually store (union across systems);
@@ -130,6 +141,12 @@ namespace VfxControl.EditorTools
             bar.Add(_readbackCountLabel);
             host.Add(bar);
 
+            // Multi-system legend: which systemId to wire into each block (shown only when >1 system).
+            _systemLegend = new Label();
+            _systemLegend.AddToClassList("vfx-particles-legend");
+            host.Add(_systemLegend);
+            UpdateSystemLegend();
+
             // The spreadsheet. Clicking a column header sorts by it (toggles asc/desc); the sort is
             // re-applied on every readback so it sticks as the data refreshes. Multi-row selection drives
             // the Scene overlay (tracked by stable slots, see OnParticleSelectionChanged; capped at
@@ -147,19 +164,32 @@ namespace VfxControl.EditorTools
             }, TrickleDown.TrickleDown);
             table.tooltip = "Alt+click a row to frame the particle in the Scene view.";
             table.AddToClassList("vfx-particles-table");
-            // Instance/# carry the same right-click menu (Show/Hide all attributes) so it stays
-            // reachable even when every attribute column is hidden — those headers never hide.
-            table.columns.Add(new Column
+            // System/Instance/# carry the same right-click menu (Show/Hide all). The # column is never
+            // hidden (it's the row anchor + always-reachable menu host); System/Instance/attrs are.
+            var systemColumn = new Column
             {
-                title = "Instance", width = 110, makeHeader = () => MakeMenuHeader("Instance"), makeCell = () => MakeCell(),
+                title = "System", width = 120, minWidth = 120, makeHeader = () => MakeMenuHeader("System"), makeCell = () => MakeCell(),
                 bindCell = (e, i) =>
                 {
-                    int inst = _readbackRows[i] / kReadbackPerInstance;
+                    int sys = SystemOf(_readbackRows[i]);
+                    ((Label)e).text = sys < _systemNames.Count ? _systemNames[sys] : $"System {sys}";
+                }
+            };
+            _hideableColumns.Add(systemColumn);
+            table.columns.Add(systemColumn);
+            var instanceColumn = new Column
+            {
+                title = "Instance", width = 110, minWidth = 110, makeHeader = () => MakeMenuHeader("Instance"), makeCell = () => MakeCell(),
+                bindCell = (e, i) =>
+                {
+                    int inst = InstanceOf(_readbackRows[i]);
                     string nm = inst < _readbackInstanceNames.Length ? _readbackInstanceNames[inst] : null;
                     ((Label)e).text = nm ?? inst.ToString();
                 }
-            });
-            table.columns.Add(new Column { title = "#", width = 44, makeHeader = () => MakeMenuHeader("#"), makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = (_readbackRows[i] % kReadbackPerInstance).ToString() });
+            };
+            _hideableColumns.Add(instanceColumn);
+            table.columns.Add(instanceColumn);
+            table.columns.Add(new Column { title = "#", width = 44, minWidth = 44, makeHeader = () => MakeMenuHeader("#"), makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = ParticleIdOf(_readbackRows[i]).ToString() });
             foreach (var a in _readbackCols)
             {
                 var attr = a; // capture per-iteration
@@ -167,7 +197,7 @@ namespace VfxControl.EditorTools
                 if (attr.Kind == VfxReadbackRecord.Kind.Color)
                     col = new Column
                     {
-                        title = attr.Title, width = 150,
+                        title = attr.Title, width = 150, minWidth = 150,
                         makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
                         makeCell = MakeColorCell,
                         bindCell = (e, i) =>
@@ -180,19 +210,32 @@ namespace VfxControl.EditorTools
                         }
                     };
                 else
+                {
+                    int w = attr.Count == 3 ? 170 : 70;
                     col = new Column
                     {
-                        title = attr.Title, width = attr.Count == 3 ? 170 : 70,
+                        title = attr.Title, width = w, minWidth = w,
                         makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
                         makeCell = () => MakeCell(),
                         bindCell = (e, i) => ((Label)e).text = FormatRbCell(_readbackRows[i], attr)
                     };
-                _attrColumns.Add(col);
+                }
+                _hideableColumns.Add(col);
                 table.columns.Add(col);
             }
             table.itemsSource = _readbackRows;
             _particleTable = table;
             host.Add(table);
+
+            // Columns keep their (min)widths above, so when they're wider than the panel the table
+            // overflows; show a horizontal scrollbar on the control's internal ScrollView so it can be
+            // scrolled sideways (header + rows scroll together) instead of compressing the columns.
+            var scroll = table.Q<ScrollView>();
+            if (scroll != null)
+            {
+                scroll.mode = ScrollViewMode.VerticalAndHorizontal;
+                scroll.horizontalScrollerVisibility = ScrollerVisibility.Auto;
+            }
 
             // Empty / not-instrumented state.
             _readbackHelp = MakeElement("vfx-helpbox");
@@ -200,7 +243,9 @@ namespace VfxControl.EditorTools
                 "No readback data. Add a Custom HLSL block (function VfxReadback) pointing at " +
                 "Assets/VfxControl/Readback/VfxReadback.hlsl in this system's Update or Output context. For " +
                 "separate per-instance rows, expose an Int property named VfxReadbackInstanceId and wire it to " +
-                "the block's instanceId input (the window auto-assigns ids). Only public APIs — see the docs."));
+                "the block's instanceId input (the window auto-assigns ids). To debug several systems at once, " +
+                "put a block in each system and wire each block's systemId to a distinct constant per the legend. " +
+                "Only public APIs — see the docs."));
             host.Add(_readbackHelp);
 
             RefreshParticleTable();
@@ -225,7 +270,7 @@ namespace VfxControl.EditorTools
 
         // Comparable key per column: 0 Instance · 1 # (particleId) · 2.. the active attribute columns
         // (float3 → magnitude, Color → luminance, else the scalar). Guards against a short data buffer.
-        private double ParticleSortKey(int slot, int col) => VfxReadbackRecord.SortKey(_readbackData, _readbackCols, slot, col, kReadbackPerInstance);
+        private double ParticleSortKey(int slot, int col) => VfxReadbackRecord.SortKey(_readbackData, _readbackCols, slot, col, kReadbackPerInstance, kReadbackMaxInstances);
 
         // Pick the active columns: the curated attributes the asset's systems actually store (union of
         // GetSystemAttributeLayout across systems); falls back to a default set when the layout is empty
@@ -234,10 +279,18 @@ namespace VfxControl.EditorTools
         {
             _readbackCols.Clear();
             var asset = _primary != null ? _primary.visualEffectAsset : null;
+
+            // systemId (wired per block) = index into the graph's systems in layout order. The same
+            // ordered list drives the System column name, the legend, and the per-system sim space.
+            _systemNames = new List<string>();
             var present = new HashSet<string>();
-            if (asset != null)
-                foreach (var kv in VfxGraphReflection.GetSystemAttributeLayout(asset))
+            var layout = asset != null ? VfxGraphReflection.GetSystemAttributeLayout(asset) : null;
+            if (layout != null)
+                foreach (var kv in layout)
+                {
+                    _systemNames.Add(kv.Key);
                     foreach (var f in kv.Value) present.Add(f.Name);
+                }
 
             foreach (var a in VfxReadbackRecord.Attrs)
             {
@@ -246,21 +299,32 @@ namespace VfxControl.EditorTools
                 if (show) _readbackCols.Add(a);
             }
 
-            // World position needs the position-bearing system's sim space (Local → transform by the
-            // owning instance; World/unknown → use as-is). Use the first system that stores `position`;
-            // multi-system assets with mixed spaces aren't disambiguated (the readback slot doesn't
-            // record its source system). Default World when unresolved (avoids a wrong double-transform).
-            _readbackPosSpace = 2; // World
-            if (asset != null)
-            {
-                var layout = VfxGraphReflection.GetSystemAttributeLayout(asset);
-                var spaces = VfxGraphReflection.GetSystemSpaces(asset);
-                foreach (var kv in layout)
-                    if (kv.Value.Exists(f => f.Name == "position") && spaces.TryGetValue(kv.Key, out int sp))
-                    { _readbackPosSpace = sp; break; }
-            }
+            // World position needs each system's sim space (Local → transform by the owning instance;
+            // World/unknown → use as-is). Since the slot now records its system, resolve space PER
+            // system rather than guessing one space for the whole asset.
+            _systemSpaceById = new int[_systemNames.Count];
+            var spaces = asset != null ? VfxGraphReflection.GetSystemSpaces(asset) : null;
+            for (int i = 0; i < _systemNames.Count; i++)
+                _systemSpaceById[i] = spaces != null && spaces.TryGetValue(_systemNames[i], out int sp) ? sp : 2; // default World
 
             LoadParticleEyes(asset);
+        }
+
+        // "Wire each block's systemId — 0: Sparks · 1: Smoke" (hidden for 0/1 systems). Tells the user
+        // which constant to type into each VfxReadback block so the System column reads the real name.
+        private void UpdateSystemLegend()
+        {
+            if (_systemLegend == null) return;
+            bool show = _systemNames.Count > 1;
+            _systemLegend.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            if (!show) return;
+            var sb = new System.Text.StringBuilder("Wire each block's systemId — ");
+            for (int i = 0; i < _systemNames.Count && i < kReadbackMaxSystems; i++)
+            {
+                if (i > 0) sb.Append(" · ");
+                sb.Append(i).Append(": ").Append(_systemNames[i]);
+            }
+            _systemLegend.text = sb.ToString();
         }
 
         // Eye state is persisted per asset GUID in SessionState (survives recompiles), default empty.
@@ -336,21 +400,23 @@ namespace VfxControl.EditorTools
             return l;
         }
 
-        // Right-click a column title → Show/Hide ALL attribute columns at once (so you don't have to
-        // toggle many one by one to isolate one or two). Composes with the built-in MultiColumnListView
-        // header menu (per-column toggles + reorder), which appends its own items below these.
+        // Right-click a column title → show/hide every column at once (so isolating one or two doesn't
+        // mean toggling many by hand). "Hide" keeps the # column as the row anchor. Composes with the
+        // built-in MultiColumnListView header menu (per-column toggles + reorder), shown below these.
         private void AttachColumnVisibilityMenu(VisualElement header)
         {
             header.AddManipulator(new ContextualMenuManipulator(evt =>
             {
-                evt.menu.AppendAction("Show All Attributes", _ => SetAllAttrColumnsVisible(true));
-                evt.menu.AppendAction("Hide All Attributes", _ => SetAllAttrColumnsVisible(false));
+                evt.menu.AppendAction("Show All Columns", _ => SetAllColumnsVisible(true));
+                evt.menu.AppendAction("Hide All Columns (keep #)", _ => SetAllColumnsVisible(false));
             }));
         }
 
-        private void SetAllAttrColumnsVisible(bool visible)
+        // Toggles System/Instance/attribute columns; the # column is intentionally excluded so the
+        // table keeps a row anchor and the (always-visible) # header keeps hosting this menu.
+        private void SetAllColumnsVisible(bool visible)
         {
-            foreach (var c in _attrColumns) c.visible = visible;
+            foreach (var c in _hideableColumns) c.visible = visible;
         }
 
         // Track the selection by stable SLOTs (not row indices): rows reorder on sort/refresh, so the
@@ -565,27 +631,18 @@ namespace VfxControl.EditorTools
         {
             if (_particleTable?.panel == null) return;
             _readbackRows.Clear();
-            int prevInstance = -1;
-            _readbackInstanceCount = 0;
             int cap = _readbackData != null ? Mathf.Min(kReadbackCap, _readbackData.Length / VfxReadbackRecord.Stride) : 0;
             if (_readbackGen != null && _readbackMaxGen != 0)
                 for (int s = 0; s < cap && s < _readbackGen.Length; s++)
                     if (_readbackGen[s] == _readbackMaxGen)
-                    {
                         _readbackRows.Add(s);
-                        int instance = s / kReadbackPerInstance;
-                        if (instance != prevInstance) { _readbackInstanceCount++; prevInstance = instance; }
-                    }
 
             // The generation stamp is "newest present in the buffer", so a system that has fully
             // emptied would otherwise freeze on its last live frame (no slot re-stamps a newer gen).
             // Public aliveParticleCount is a reliable "all dead" signal: drop the stale rows so the
             // table goes empty rather than showing dead particles.
             if (_readbackRows.Count > 0 && LiveAliveCount() == 0)
-            {
                 _readbackRows.Clear();
-                _readbackInstanceCount = 0;
-            }
 
             SortReadbackRows(); // keep the user's chosen column sort applied across refreshes
             _particleTable.RefreshItems();
@@ -609,7 +666,12 @@ namespace VfxControl.EditorTools
 
             bool empty = _readbackRows.Count == 0;
             if (_readbackCountLabel != null)
-                _readbackCountLabel.text = $"{_readbackRows.Count} · {_readbackInstanceCount} instance{(_readbackInstanceCount == 1 ? "" : "s")}";
+            {
+                int sysMask = 0, instMask = 0; // SystemOf ≤ 7, InstanceOf ≤ 15 → fit in an int bitmask
+                foreach (var slot in _readbackRows) { sysMask |= 1 << SystemOf(slot); instMask |= 1 << InstanceOf(slot); }
+                int sys = CountBits(sysMask), inst = CountBits(instMask);
+                _readbackCountLabel.text = $"{_readbackRows.Count} · {sys} system{(sys == 1 ? "" : "s")} · {inst} instance{(inst == 1 ? "" : "s")}";
+            }
             if (_readbackHelp != null) _readbackHelp.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
             _particleTable.style.display = empty ? DisplayStyle.None : DisplayStyle.Flex;
         }
@@ -622,9 +684,11 @@ namespace VfxControl.EditorTools
             world = default;
             if (_readbackData == null) return false;
             var p = new Vector3(RbVal(slot, 0), RbVal(slot, 1), RbVal(slot, 2));
-            int inst = slot / kReadbackPerInstance;
+            int inst = InstanceOf(slot);
             var owner = inst >= 0 && inst < _readbackSelected.Count ? _readbackSelected[inst] : _primary;
-            world = (_readbackPosSpace == 1 && owner != null) // 1 = Local
+            int sys = SystemOf(slot);
+            int space = sys >= 0 && sys < _systemSpaceById.Length ? _systemSpaceById[sys] : 2; // World default
+            world = (space == 1 && owner != null) // 1 = Local → transform by the owning instance
                 ? owner.transform.localToWorldMatrix.MultiplyPoint3x4(p)
                 : p;
             return true;

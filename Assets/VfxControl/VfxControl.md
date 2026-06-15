@@ -84,9 +84,11 @@ a `[CustomEditor]`, to avoid conflicting with the VFX package's own
   `--vfx-bolt`, inherited via `var()`); the category accent dots are a separate per-name palette
   set inline from C#.
 - **`Readback/VfxReadback.hlsl`** — opt-in sample include for the Debug ▸ Particles spreadsheet: a
-  Custom HLSL block points at it (Update context, **no inputs to wire**) and each particle atomically
-  appends (`InterlockedAdd` on a counter) its position+color into a shared global buffer, so any number
-  of instances of the asset never clobber each other; the window reads it back (see Debug tab below).
+  Custom HLSL block points at it (`void VfxReadback(inout VFXAttributes, int instanceId, int systemId)`,
+  Update or Output context) and each particle writes a **fixed superset record** into a shared global
+  buffer at a **stable slot** keyed by `systemId`/`instanceId`/`particleId` (so multiple systems +
+  instances never clobber each other); the window reads it back (see Debug tab below). Wire `instanceId`
+  (auto-assigned) + a per-block `systemId` constant (per the in-panel legend).
 - **`Editor/Tests/`** — EditMode test suite (UTF; `VfxControl.Editor.Tests.asmdef`, internals exposed
   via `Editor/AssemblyInfo.cs` → `InternalsVisibleTo`). `VfxControlStateTests` (prefs/set
   serialization, duration clamp — isolated via a throwaway GUID + save/restore), `VfxPropertySheetTests`
@@ -504,7 +506,7 @@ Sphere/Circle/Torus variants work with no extra code).
     `VFXSlot.value as Texture`). Rows `name · resolution · size` (public `Profiler.GetRuntimeMemorySizeLong`),
     biggest first, with a total; clicking pings the asset. Static per asset → no live refresh.
   - **Particles** — `BuildDebugParticles`: an **opt-in per-particle attribute spreadsheet**
-    (`MultiColumnListView`: Instance · # · then **one column per attribute the system actually uses**).
+    (`MultiColumnListView`: System · Instance · # · then **one column per attribute the system actually uses**).
     Columns are **driven by the graph layout**: `BuildReadbackColumns` takes the curated `kReadbackAttrs`
     set (position/velocity/direction/color/age/lifetime/alpha/size/targetPosition/mass/scale/texIndex/
     angle/alive/angularVelocity/particleId/pivot — offsets matching the .hlsl record) and keeps only those
@@ -512,22 +514,31 @@ Sphere/Circle/Torus variants work with no extra code).
     alpha when the graph isn't compiled). Headers are click-sortable (`ColumnSortingMode.Custom` →
     `SortReadbackRows`/`ParticleSortKey`; float3 sorts by magnitude, Color by luminance; re-applied on
     every readback) and **reorderable + individually hideable** via the built-in MultiColumnListView
-    header menu. **Right-click any column title → "Show All Attributes" / "Hide All Attributes"**
+    header menu. **Right-click any column title → "Show All Columns" / "Hide All Columns (keep #)"**
     (`AttachColumnVisibilityMenu`, a `ContextualMenuManipulator` that toggles `Column.visible` on the
-    tracked `_attrColumns`) so isolating one or two attributes doesn't mean hiding the rest one by one;
-    these compose with (sit above) the built-in per-column toggles. The menu is attached to the
-    Instance/# headers too (`MakeMenuHeader`) so it stays reachable when every attribute column is hidden.
+    tracked `_hideableColumns` = System/Instance/attrs) so isolating one or two doesn't mean hiding the
+    rest one by one; these compose with (sit above) the built-in per-column toggles. The **# column is
+    never hidden** — it's the row anchor and (via `MakeMenuHeader`) keeps hosting this menu so "Show All"
+    stays reachable after a Hide All.
     The Color swatch is `.gamma`-corrected to match the on-screen particle; numeric text
     stays raw linear. VFX particles are GPU-only with **no managed readback API**, so this uses the
     GraphicsBuffer readback pattern from Unity VFX dev Paul Demeulenaere's
     [`vfx-readback`](https://github.com/PaulDemeulenaere/vfx-readback): the user instruments the graph
     with a **Custom HLSL block** pointing at `Readback/VfxReadback.hlsl` (Update or Output context,
-    function `VfxReadback(inout VFXAttributes, int instanceId)`) which writes a **fixed superset record**
-    (`kReadbackStride`=9 float4/particle — see the .hlsl packing) into `_VfxReadbackBuffer` at a **stable
-    slot = `instanceId*256 + particleId%256`** **and stamps** `_VfxReadbackGen[slot]` with the current
-    `_VfxReadbackGeneration`. Reading an attribute the system doesn't write yields its default and does
+    function `VfxReadback(inout VFXAttributes, int instanceId, int systemId)`) which writes a **fixed
+    superset record** (`kReadbackStride`=9 float4/particle — see the .hlsl packing) into
+    `_VfxReadbackBuffer` at a **stable slot = `(systemId*kReadbackMaxInstances + instanceId)*256 +
+    particleId%256`** **and stamps** `_VfxReadbackGen[slot]` with the current `_VfxReadbackGeneration`.
+    Reading an attribute the system doesn't write yields its default and does
     NOT enter the stored layout, so unused attributes simply don't get a column (their buffer slots hold
-    harmless defaults). Custom (user) attributes aren't captured — the record is a fixed standard set. **Per-instance
+    harmless defaults). Custom (user) attributes aren't captured — the record is a fixed standard set.
+    **Multi-system, SELECTED-only:** put a block in **each** system and wire each block's `systemId` to a
+    distinct constant (0,1,…); the panel shows a **legend** (`UpdateSystemLegend`, `systemId` = index into
+    `GetSystemAttributeLayout`'s ordered keys = `_systemNames`) so you know which number maps to which
+    system, and a **System column** (`SystemOf(slot)` → `_systemNames`). `systemId = 0` reduces the slot
+    to the old single-system layout (backward compatible). World position resolves space **per system**
+    (`_systemSpaceById[SystemOf(slot)]` from `GetSystemSpaces`), so the overlay/Alt-click framing are
+    correct for mixed-space multi-system graphs. **Per-instance
     separation, SELECTED-only:** the user exposes an Int property named `VfxReadbackInstanceId` and wires
     it to the block's `instanceId` input; `AssignReadbackInstanceIds` (~2 Hz — `SetInt` persists; forced
     on selection change) gives the **selected** instances (`_effects`, sorted by `GetEntityId()`) ids
@@ -592,8 +603,10 @@ Sphere/Circle/Torus variants work with no extra code).
     (an earlier version had one for the since-removed `instanceActiveIndex`/`InterlockedAdd`; it silently
     disabled the Output-context use — block in Output → body compiled out → list never updates). Avoid the
     **Initialize** context (fires only at particle birth → empty on frames with no spawn). Limits (debug
-    snapshot): 256 particleIds × 16 instances; particleIds `≥ 256` wrap within an instance and instances
-    `≥ 16` are skipped. Buffers reused + disposed in `OnDisable`.
+    snapshot): 8 systems × 16 instances × 256 particleIds (`kReadbackMaxSystems`/`kReadbackMaxInstances`/
+    `kReadbackPerInstance`, kept in lockstep with the .hlsl defines); particleIds `≥ 256` wrap within an
+    instance, and systemIds `≥ 8` / instanceIds `≥ 16` are skipped by the block. Buffers reused + disposed
+    in `OnDisable`.
   - **Visualizers** — `BuildDebugVisualizers`: a **Show Bounds** toggle row (`.vfx-toggle-row`, whole-row
     clickable) → the `ShowBounds` property (read straight from `SessionState` `vfxctrl.showBounds`, **not
     cached**, so it's shared across all windows) drives `DrawBoundsVisualizer` in `OnSceneGui` (world-space

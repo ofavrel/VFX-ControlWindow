@@ -72,13 +72,16 @@ namespace VfxControl.EditorTools
             }
         }
 
-        // Comparable sort key per column: 0 instance · 1 particleId · 2.. the active attribute columns
-        // (float3 → magnitude, Color → luminance, else the scalar). `perInstance` = slots per instance.
-        public static double SortKey(Vector4[] data, IReadOnlyList<Attr> cols, int slot, int col, int perInstance)
+        // Comparable sort key per column: 0 system · 1 instance · 2 particleId · 3.. the active attribute
+        // columns (float3 → magnitude, Color → luminance, else the scalar). The slot packs
+        // system/instance/particle: slot = (system*maxInstances + instance)*perInstance + particleId.
+        public static double SortKey(Vector4[] data, IReadOnlyList<Attr> cols, int slot, int col, int perInstance, int maxInstances)
         {
-            if (col == 0) return slot / perInstance;
-            if (col == 1) return slot % perInstance;
-            int ci = col - 2;
+            int combined = slot / perInstance;          // system*maxInstances + instance
+            if (col == 0) return combined / maxInstances; // system
+            if (col == 1) return combined % maxInstances; // instance
+            if (col == 2) return slot % perInstance;      // particleId
+            int ci = col - 3;
             if (ci < 0 || ci >= cols.Count) return slot;
             var a = cols[ci];
             if (a.Kind == Kind.Color)

@@ -873,6 +873,13 @@
     font-size: 11px;
     color: var(--unity-colors-label-text);
 }
+.vfx-particles-legend {
+    font-size: 11px;
+    white-space: normal;
+    opacity: 0.7;
+    padding: 0 2px 6px 2px;
+    color: var(--unity-colors-label-text);
+}
 .vfx-particles-table {
     height: 280px;
     border-width: 1px;
