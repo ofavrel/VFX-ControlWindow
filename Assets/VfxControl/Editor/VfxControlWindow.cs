@@ -704,11 +704,29 @@ namespace VfxControl.EditorTools
             rail.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             rail.verticalScrollerVisibility = ScrollerVisibility.Hidden;
 
-            rail.Add(MakeRailButton("all", "All", default, true));
+            string sel = CurrentSection();
+            Button active = null;
+            var allBtn = MakeRailButton("all", "All", default, true);
+            if (sel == "all") active = allBtn;
+            rail.Add(allBtn);
             foreach (var s in def.Sections())
-                rail.Add(MakeRailButton(s.Id, s.Label, s.Dot, !s.HasDot));
+            {
+                var btn = MakeRailButton(s.Id, s.Label, s.Dot, !s.HasDot);
+                if (sel == s.Id) active = btn;
+                rail.Add(btn);
+            }
 
             AttachHScroll(rail);
+
+            // The rail is rebuilt (offset 0) on every section click; scroll the selected section back
+            // into view once it's laid out, so a click never hides it (matters with many categories).
+            // One-shot on first geometry: ScrollTo only moves if the item isn't already fully visible.
+            if (active != null)
+            {
+                EventCallback<GeometryChangedEvent> onGeom = null;
+                onGeom = _ => { rail.UnregisterCallback(onGeom); rail.ScrollTo(active); };
+                rail.RegisterCallback(onGeom);
+            }
             return rail;
         }
 
