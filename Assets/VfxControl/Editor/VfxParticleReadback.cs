@@ -64,6 +64,7 @@ namespace VfxControl.EditorTools
         private bool _readbackCaptureOnce;               // a manual Capture was requested
         private double _lastReadbackReq;                 // throttle (~6 Hz)
         private MultiColumnListView _particleTable;
+        private readonly List<Column> _attrColumns = new List<Column>(); // the per-attribute columns (Show/Hide all targets these, not Instance/#)
         private Label _readbackCountLabel;
         private VisualElement _readbackHelp;
 
@@ -107,6 +108,7 @@ namespace VfxControl.EditorTools
         public void Build(VisualElement host)
         {
             _particleTable = null;
+            _attrColumns.Clear();
             _readbackCountLabel = null;
             _readbackHelp = null;
 
@@ -145,9 +147,11 @@ namespace VfxControl.EditorTools
             }, TrickleDown.TrickleDown);
             table.tooltip = "Alt+click a row to frame the particle in the Scene view.";
             table.AddToClassList("vfx-particles-table");
+            // Instance/# carry the same right-click menu (Show/Hide all attributes) so it stays
+            // reachable even when every attribute column is hidden — those headers never hide.
             table.columns.Add(new Column
             {
-                title = "Instance", width = 110, makeCell = () => MakeCell(),
+                title = "Instance", width = 110, makeHeader = () => MakeMenuHeader("Instance"), makeCell = () => MakeCell(),
                 bindCell = (e, i) =>
                 {
                     int inst = _readbackRows[i] / kReadbackPerInstance;
@@ -155,12 +159,13 @@ namespace VfxControl.EditorTools
                     ((Label)e).text = nm ?? inst.ToString();
                 }
             });
-            table.columns.Add(new Column { title = "#", width = 44, makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = (_readbackRows[i] % kReadbackPerInstance).ToString() });
+            table.columns.Add(new Column { title = "#", width = 44, makeHeader = () => MakeMenuHeader("#"), makeCell = () => MakeCell(), bindCell = (e, i) => ((Label)e).text = (_readbackRows[i] % kReadbackPerInstance).ToString() });
             foreach (var a in _readbackCols)
             {
                 var attr = a; // capture per-iteration
+                Column col;
                 if (attr.Kind == VfxReadbackRecord.Kind.Color)
-                    table.columns.Add(new Column
+                    col = new Column
                     {
                         title = attr.Title, width = 150,
                         makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
@@ -173,15 +178,17 @@ namespace VfxControl.EditorTools
                             e.Q(className: "vfx-particles-swatch").style.backgroundColor = new Color(r, g, b2, 1f).gamma;
                             e.Q<Label>().text = $"{r:0.##}, {g:0.##}, {b2:0.##}";
                         }
-                    });
+                    };
                 else
-                    table.columns.Add(new Column
+                    col = new Column
                     {
                         title = attr.Title, width = attr.Count == 3 ? 170 : 70,
                         makeHeader = () => MakeAttrHeader(attr), bindHeader = e => UpdateEyeVisual(e, attr),
                         makeCell = () => MakeCell(),
                         bindCell = (e, i) => ((Label)e).text = FormatRbCell(_readbackRows[i], attr)
-                    });
+                    };
+                _attrColumns.Add(col);
+                table.columns.Add(col);
             }
             table.itemsSource = _readbackRows;
             _particleTable = table;
@@ -309,6 +316,7 @@ namespace VfxControl.EditorTools
                 SceneView.RepaintAll();
             });
             h.Add(eye);
+            AttachColumnVisibilityMenu(h);
             UpdateEyeVisual(h, attr);
             return h;
         }
@@ -317,6 +325,32 @@ namespace VfxControl.EditorTools
         {
             var eye = header.Q(className: "vfx-eye");
             eye?.EnableInClassList("vfx-eye--on", _particleEyes.Contains(attr.Layout));
+        }
+
+        // A plain text header (Instance / #) that still carries the Show/Hide-all right-click menu.
+        private VisualElement MakeMenuHeader(string title)
+        {
+            var l = new Label(title);
+            l.AddToClassList("vfx-particles-header-label");
+            AttachColumnVisibilityMenu(l);
+            return l;
+        }
+
+        // Right-click a column title → Show/Hide ALL attribute columns at once (so you don't have to
+        // toggle many one by one to isolate one or two). Composes with the built-in MultiColumnListView
+        // header menu (per-column toggles + reorder), which appends its own items below these.
+        private void AttachColumnVisibilityMenu(VisualElement header)
+        {
+            header.AddManipulator(new ContextualMenuManipulator(evt =>
+            {
+                evt.menu.AppendAction("Show All Attributes", _ => SetAllAttrColumnsVisible(true));
+                evt.menu.AppendAction("Hide All Attributes", _ => SetAllAttrColumnsVisible(false));
+            }));
+        }
+
+        private void SetAllAttrColumnsVisible(bool visible)
+        {
+            foreach (var c in _attrColumns) c.visible = visible;
         }
 
         // Track the selection by stable SLOTs (not row indices): rows reorder on sort/refresh, so the

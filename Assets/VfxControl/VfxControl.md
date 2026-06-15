@@ -196,15 +196,18 @@ name for display, bold/`<b>` when used as a header), `SheetType`, `RealType`, `C
   Properties+Renderer+Playback stacked with no rail (`BuildAllTab`). **Tab tear-off**: right-clicking
   a focused tab (not "All") → **"Open in new window"** (`ContextualMenuManipulator` → `OpenSolo`)
   spawns a second dockable `VfxControlWindow` via `CreateWindow<>` pinned to that one tab — a
-  **session-only** `_soloTab` (NOT `[SerializeField]`: a serialized solo flag bakes the lean state into
-  the saved layout, so a torn-off window came back lean every session and stranded the Asset
-  field/transport — now a pop-out reverts to a full window after a domain reload/restart) hides the tab
+  **`[SerializeField]` `_soloTab`** so each window keeps its OWN pinned tab across a domain reload/restart
+  (a torn-off Renderer window stays Renderer instead of syncing to the shared, SessionState main-tab).
+  Unity serializes a null string as `""` and the main window never sets it, so every "is solo" test goes
+  through **`IsSolo` (`!string.IsNullOrEmpty(_soloTab)`)** — treating null/empty as a *full* window, which
+  is what keeps the main window from coming back lean (an earlier non-serialized `_soloTab` that survived
+  a reload was the repro for the main window stranding its Asset/transport). A solo window hides the tab
   strip (`PopulateTabs` early-out) and forces `_tab` (clamped right after `_tab = _state.Tab` in
   `SetTarget`, so it follows selection without ever writing the shared `_state.Tab`). A pop-out is
   **lean** — `Rebuild` always builds the Asset (meta) row + transport bar + section gap but sets their
-  `display` to `None` when `_soloTab != null` (so they can never be stranded out of the tree), keeping just header +
+  `display` to `None` when `IsSolo` (so they can never be stranded out of the tree), keeping just header +
   chrome (search + chips) + rail + the one tab's body — and is a **passive observer**: `Tick` only
-  advances the playback clock when `_soloTab == null`, so multiple windows never fight over
+  advances the playback clock when `!IsSolo`, so multiple windows never fight over
   `Reinit`/`pause` on the shared effect (the main window stays the transport's home). `Open` (the
   menu) restores a solo instance to a full window if that's the only one focused. Each under a **collapsible**
   top-level header (`AddAllSection`, `.vfx-allsection-head` + `-title`/`-twirl`, collapse key
@@ -508,7 +511,13 @@ Sphere/Circle/Torus variants work with no extra code).
     present in the union of `GetSystemAttributeLayout` across systems (falls back to position/age/color/
     alpha when the graph isn't compiled). Headers are click-sortable (`ColumnSortingMode.Custom` →
     `SortReadbackRows`/`ParticleSortKey`; float3 sorts by magnitude, Color by luminance; re-applied on
-    every readback). The Color swatch is `.gamma`-corrected to match the on-screen particle; numeric text
+    every readback) and **reorderable + individually hideable** via the built-in MultiColumnListView
+    header menu. **Right-click any column title → "Show All Attributes" / "Hide All Attributes"**
+    (`AttachColumnVisibilityMenu`, a `ContextualMenuManipulator` that toggles `Column.visible` on the
+    tracked `_attrColumns`) so isolating one or two attributes doesn't mean hiding the rest one by one;
+    these compose with (sit above) the built-in per-column toggles. The menu is attached to the
+    Instance/# headers too (`MakeMenuHeader`) so it stays reachable when every attribute column is hidden.
+    The Color swatch is `.gamma`-corrected to match the on-screen particle; numeric text
     stays raw linear. VFX particles are GPU-only with **no managed readback API**, so this uses the
     GraphicsBuffer readback pattern from Unity VFX dev Paul Demeulenaere's
     [`vfx-readback`](https://github.com/PaulDemeulenaere/vfx-readback): the user instruments the graph

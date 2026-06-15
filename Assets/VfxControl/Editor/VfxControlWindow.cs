@@ -52,12 +52,14 @@ namespace VfxControl.EditorTools
         private Image _playIcon;
         private Slider _rateSlider; // Play Rate strip under the transport (resynced by UpdateLive)
 
-        // Tab tear-off: when non-null this window shows ONLY that tab (the strip is hidden and
-        // _tab is pinned). Deliberately NOT [SerializeField] — a serialized solo flag bakes the lean
-        // state into the saved window layout, so a torn-off window comes back lean every session and
-        // strands the Asset field/transport. Session-only instead: a pop-out reverts to a full window
-        // after a domain reload / restart (re-tear-off if wanted).
-        private string _soloTab;
+        // Tab tear-off: when set, this window shows ONLY that tab (the strip + Asset row + transport
+        // are hidden and _tab is pinned). [SerializeField] so each window keeps its OWN pinned tab
+        // across a domain reload / restart — a torn-off Renderer window must stay Renderer, not sync
+        // to the (shared, SessionState) main-window tab. Unity serializes a null string as "" and the
+        // main window never sets this, so every "is solo" test goes through IsSolo, which treats
+        // null/empty as a full window — that's what keeps the main window from coming back lean.
+        [SerializeField] private string _soloTab;
+        private bool IsSolo => !string.IsNullOrEmpty(_soloTab);
         // persistent chrome containers: the search field is built ONCE (so typing never
         // loses focus); tabs/chips/rail/body are repopulated by PopulateActiveTab.
         private ToolbarSearchField _searchField;
@@ -93,7 +95,7 @@ namespace VfxControl.EditorTools
             var w = GetWindow<VfxControlWindow>();
             // If the focused instance is a torn-off (solo) pop-out, restore it to a full window so
             // the menu always yields a complete inspector (the tab strip is otherwise hidden).
-            if (w._soloTab != null) { w._soloTab = null; w.Rebuild(); }
+            if (w.IsSolo) { w._soloTab = null; w.Rebuild(); }
             w.titleContent = new GUIContent("VFX Control");
             w.minSize = new Vector2(320, 360);
             w.Show();
@@ -219,7 +221,7 @@ namespace VfxControl.EditorTools
             var meta = BuildMetaSection();
             var transport = BuildMiniTransport();
             var gap = MakeElement("vfx-section-gap");   // the intentional divider
-            var leanDisplay = _soloTab == null ? DisplayStyle.Flex : DisplayStyle.None;
+            var leanDisplay = IsSolo ? DisplayStyle.None : DisplayStyle.Flex;
             meta.style.display = transport.style.display = gap.style.display = leanDisplay;
             root.Add(meta);
             root.Add(transport);
@@ -383,7 +385,7 @@ namespace VfxControl.EditorTools
         {
             if (_tabsHost == null) return;
             // Pop-out (solo) windows show a single pinned tab — hide the strip entirely.
-            if (_soloTab != null) { _tabsHost.style.display = DisplayStyle.None; return; }
+            if (IsSolo) { _tabsHost.style.display = DisplayStyle.None; return; }
             _tabsHost.style.display = DisplayStyle.Flex;
             _tabsHost.Clear();
             foreach (var def in _tabDefs)
@@ -929,7 +931,7 @@ namespace VfxControl.EditorTools
 
             // Only the main window drives the playback clock; a transport-less pop-out just
             // observes (otherwise multiple windows would fight over Reinit/pause on the shared effect).
-            if (_soloTab == null && _effect != null && !_effect.pause && _duration > 0f)
+            if (!IsSolo && _effect != null && !_effect.pause && _duration > 0f)
             {
                 float rate = _effect.playRate <= 0f ? 1f : _effect.playRate;
                 _scrubT += dt * rate / _duration;

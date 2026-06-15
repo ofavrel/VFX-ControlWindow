@@ -143,7 +143,7 @@ namespace VfxControl.EditorTools
             _collapsed = _state.LoadCollapsed();
             _constrained = _state.LoadConstrained();
             _tab = _state.Tab;
-            if (_soloTab != null) _tab = _soloTab; // a pop-out window is pinned to its one tab
+            if (IsSolo) _tab = _soloTab; // a pop-out window is pinned to its one tab
             _filter = _state.Filter;
             _search = _state.Search;
             LoadSections();
